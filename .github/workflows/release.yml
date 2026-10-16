@@ -1,0 +1,132 @@
+name: release
+
+# Pushing a version tag (e.g. 0.1.0 or v0.1.0) builds the portable executables for Windows and Linux and
+# publishes them as a GitHub Release.
+on:
+  push:
+    tags:
+      - "[0-9]+.[0-9]+.[0-9]+"
+      - "v[0-9]+.[0-9]+.[0-9]+"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: Check version
+    runs-on: ubuntu-22.04
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          CARGO_VERSION="$(grep -m1 '^version' Cargo.toml | sed -E 's/version *= *"([^"]+)"/\1/')"
+          echo "tag=$VERSION  Cargo.toml=$CARGO_VERSION"
+          if [ "$VERSION" != "$CARGO_VERSION" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match the version in Cargo.toml ($CARGO_VERSION)"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: check
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-latest, target: windows, exe: video-frame-analyzer.exe }
+          - { os: ubuntu-22.04, target: linux, exe: video-frame-analyzer }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Linux build dependencies
+        if: matrix.target == 'linux'
+        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev libxcb1-dev xz-utils unzip cmake g++
+
+      - name: Fetch ffmpeg, Real-ESRGAN and waifu2x
+        shell: bash
+        run: scripts/fetch-assets.sh ${{ matrix.target }}
+
+      - name: Build the CPU runner (ncnn)
+        shell: bash
+        run: |
+          if [ "${{ matrix.target }}" = windows ]; then export PATH="/c/mingw64/bin:$PATH"; fi
+          scripts/build-esrgan-cpu.sh ${{ matrix.target }}
+
+      - name: Build the executable
+        run: cargo build --release
+
+      - name: Package
+        shell: bash
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          NAME="video-frame-analyzer-${VERSION}-${{ matrix.target }}-x86_64"
+          mkdir -p "dist/$NAME"
+          cp "target/release/${{ matrix.exe }}" LICENSE THIRD_PARTY_NOTICES.md README.md "dist/$NAME/"
+          cd dist
+          if [ "${{ matrix.target }}" = windows ]; then
+            7z a -tzip "$NAME.zip" "$NAME" > /dev/null
+            ASSET="$NAME.zip"
+          else
+            tar -czf "$NAME.tar.gz" "$NAME"
+            ASSET="$NAME.tar.gz"
+          fi
+          sha256sum "$ASSET" > "$ASSET.sha256"
+          ls -la
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.target }}
+          path: |
+            dist/*.zip
+            dist/*.tar.gz
+            dist/*.sha256
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    needs: [check, build]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: dist
+
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          ls -la dist
+          cat > notes.md <<'EOF'
+          Portable video player / frame exporter with live filters and neural enhancement (Real-ESRGAN, waifu2x).
+
+          **Run it:** unzip (Windows) or untar (Linux) and start `video-frame-analyzer` — ffmpeg and the neural
+          engines are embedded and unpacked to the user cache folder on first start. No installation, nothing is
+          downloaded at run time.
+
+          **Licenses:** the project's own code is MIT (`LICENSE`). The executable bundles a GPL build of ffmpeg and
+          other third-party components, see `THIRD_PARTY_NOTICES.md`.
+
+          Verify downloads with the accompanying `.sha256` files.
+          EOF
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Video Frame Analyzer $GITHUB_REF_NAME" \
+            --notes-file notes.md \
+            --generate-notes

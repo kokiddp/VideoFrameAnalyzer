@@ -1,8 +1,18 @@
 name: build
-on: [push, workflow_dispatch]
+
+# Continuous build of the portable executables for every branch push (releases are built by release.yml on tags).
+on:
+  push:
+    branches: ["**"]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
   build:
     strategy:
+      fail-fast: false
       matrix:
         include:
           - { os: windows-latest, target: windows, exe: video-frame-analyzer.exe }
@@ -11,15 +21,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: Linux build deps
+      - uses: Swatinem/rust-cache@v2
+      - name: Linux build dependencies
         if: matrix.target == 'linux'
-        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev libxcb1-dev xz-utils unzip
-      - name: Fetch ffmpeg + Real-ESRGAN
+        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev libxcb1-dev xz-utils unzip cmake g++
+      - name: Fetch ffmpeg, Real-ESRGAN and waifu2x
         shell: bash
         run: scripts/fetch-assets.sh ${{ matrix.target }}
-      - name: Build CPU Real-ESRGAN runner
+      - name: Build the CPU runner (ncnn)
         shell: bash
-        run: scripts/build-esrgan-cpu.sh ${{ matrix.target }}
+        run: |
+          if [ "${{ matrix.target }}" = windows ]; then export PATH="/c/mingw64/bin:$PATH"; fi
+          scripts/build-esrgan-cpu.sh ${{ matrix.target }}
       - run: cargo build --release
       - uses: actions/upload-artifact@v4
-        with: { name: "video-frame-analyzer-${{ matrix.target }}", path: "target/release/${{ matrix.exe }}" }
+        with:
+          name: video-frame-analyzer-${{ matrix.target }}
+          path: target/release/${{ matrix.exe }}

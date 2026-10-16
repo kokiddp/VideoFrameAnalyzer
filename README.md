@@ -230,7 +230,18 @@ The release profile uses LTO and `panic = "abort"`. The first build compresses ~
 longer (about 1–2 minutes on a modern machine). Building ncnn for the CPU runner takes ~2 minutes with 6 jobs; the
 script caps the parallel jobs by CPU count and free memory (an unbounded `make -j` can exhaust RAM) — override with
 `BUILD_JOBS=n scripts/build-esrgan-cpu.sh linux`. On Linux the runner links libgomp (OpenMP) and the GCC runtime
-statically. A GitHub Actions workflow (`.github/workflows/build.yml`) performs the same steps for Windows and Linux.
+statically. Two GitHub Actions workflows run the same steps for Windows and Linux: `build.yml` on every branch push, and
+`release.yml` when a version tag is pushed (see below).
+
+**Releasing.** Set `version` in `Cargo.toml`, commit, then push a tag with the same number:
+
+```sh
+git tag 0.1.0 && git push origin main 0.1.0     # a leading "v" (v0.1.0) works too
+```
+
+`release.yml` checks that tag and `Cargo.toml` agree, builds `video-frame-analyzer-<version>-windows-x86_64.zip` and
+`-linux-x86_64.tar.gz` (executable + LICENSE + THIRD_PARTY_NOTICES + README, with `.sha256` files) and publishes them as
+a GitHub Release with generated notes.
 
 ---
 
