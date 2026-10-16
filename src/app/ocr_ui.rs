@@ -29,6 +29,7 @@ pub struct OcrState {
     next_n: u64,
     step: u64,
     use_ai: bool,
+    use_gpu: bool,
     auto: bool,
     /// region of interest, fractions of the frame
     roi: Option<[f32; 4]>,
@@ -50,12 +51,13 @@ pub struct OcrState {
 impl OcrState {
     pub fn new() -> OcrState {
         OcrState {
-            engine: Arc::new(std::sync::Mutex::new(None)),
+            engine: Arc::new(std::sync::Mutex::new(Vec::new())),
             mode: Mode::Both,
             scope: Scope::Frame,
             next_n: 30,
             step: 1,
             use_ai: false,
+            use_gpu: true,
             auto: false,
             roi: None,
             drag_from: None,
@@ -206,6 +208,7 @@ impl App {
             roi: self.ocr.roi,
             text: self.ocr.mode != Mode::Plates,
             plates: self.ocr.mode != Mode::Text,
+            gpu: self.ocr.use_gpu,
         };
         self.pb.playing = false;
         let (tx, rx) = channel();
@@ -336,6 +339,10 @@ impl App {
                 ui.add_enabled(ai_ok, egui::Checkbox::new(&mut self.ocr.use_ai, "Usa fotogramma potenziato (AI)"))
                     .on_hover_text("Passa ogni fotogramma dalla rete neurale prima della lettura: aiuta su scritte piccole e sfocate, ma è molto più lento. Richiede l'AI attiva nei filtri.");
             });
+            if cfg!(windows) {
+                ui.checkbox(&mut self.ocr.use_gpu, "Usa la GPU (DirectML)")
+                    .on_hover_text("Esegue i modelli sulla scheda video (NVIDIA, AMD o Intel con DirectX 12): molto più veloce. Se non parte si usa la CPU.");
+            }
             ui.checkbox(&mut self.ocr.auto, "OCR automatico a fotogramma fermo");
             ui.horizontal(|ui| {
                 match self.ocr.roi {

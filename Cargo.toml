@@ -1,9 +1,9 @@
 [package]
 name = "video-frame-analyzer"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 license = "MIT"
-authors = ["Gabriele Coquillard"]
+authors = ["Gabriele Coquillard - ELK-Lab"]
 readme = "README.md"
 description = "Portable video player and frame exporter with filters and AI upscaling (ffmpeg + Real-ESRGAN embedded)"
 
@@ -13,14 +13,18 @@ zstd = "0.13"
 tar = "0.4"
 dirs = "6"
 image = { version = "0.25", default-features = false, features = ["png"] }
-tract-onnx = "0.21"
-prost = "0.11"
 
 [target.'cfg(windows)'.dependencies]
 rfd = "0.17"
+libloading = "0.8"
+ort = { version = "=2.0.0-rc.14", default-features = false, features = ["load-dynamic", "directml", "std", "api-24"] }
 
 [target.'cfg(not(windows))'.dependencies]
 rfd = { version = "0.17", default-features = false, features = ["xdg-portal", "pollster"] }
+ort = { version = "=2.0.0-rc.14", default-features = false, features = ["load-dynamic", "std", "api-24"] }
+
+[dev-dependencies]
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 
 [build-dependencies]
 zstd = { version = "0.13", features = ["zstdmt"] }

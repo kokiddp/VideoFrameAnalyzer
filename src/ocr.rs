@@ -1,17 +1,15 @@
 //! OCR engine: scene-text detection + recognition (PaddleOCR PP-OCRv5 "latin": en, it, fr, de, nl, pt, es, ...)
-//! and licence-plate detection + recognition, all running as ONNX models on the pure-Rust `tract` runtime.
-use prost::Message;
-use std::collections::HashMap;
+//! and licence-plate detection + recognition, as ONNX models on ONNX Runtime (DirectML GPU on Windows, CPU elsewhere).
+use ort::{environment::Environment, session::Session, value::Tensor};
 use std::path::Path;
-use tract_onnx::pb::{tensor_shape_proto::dimension::Value as DimV, type_proto::Value as TypeV, ModelProto};
-use tract_onnx::prelude::*;
-
-type Plan = TypedRunnableModel<TypedModel>;
+use std::sync::OnceLock;
 
 /// Model files expected in the OCR directory.
 pub const FILES: [&str; 5] = ["text_det.onnx", "text_rec.onnx", "text_dict.txt", "plate_det.onnx", "plate_rec.onnx"];
+/// ONNX Runtime library shipped next to the models.
+pub const RUNTIME: &str = if cfg!(windows) { "onnxruntime.dll" } else { "libonnxruntime.so" };
 /// Side of the (square) input of the plate detector.
-const PLATE_DET_SIZE: usize = 416;
+const PLATE_DET_SIZE: usize = 608;
 const PLATE_ALPHABET: &[u8] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_";
 const PLATE_SLOTS: usize = 9;
 const PLATE_W: usize = 140;
@@ -56,6 +54,10 @@ pub struct Found {
     pub rect: Rect,
     pub text: String,
     pub conf: f32,
+    /// Plates: probability of every character in every slot (`PLATE_SLOTS × alphabet`), empty for text.
+    pub slots: Vec<f32>,
+    /// Plates: sharpness of the crop, 0..1.
+    pub quality: f32,
 }
 
 /// Packed RGB image.
@@ -156,61 +158,91 @@ impl Img {
     }
 }
 
-fn fix_dims(vi: &mut tract_onnx::pb::ValueInfoProto) {
-    if let Some(TypeV::TensorType(tt)) = vi.r#type.as_mut().and_then(|t| t.value.as_mut()) {
-        if let Some(sh) = tt.shape.as_mut() {
-            for (i, d) in sh.dim.iter_mut().enumerate() {
-                if let Some(DimV::DimParam(p)) = d.value.as_mut() {
-                    // the converted models name dynamic dimensions "DynamicDimension.0" or leave them empty, which tract cannot parse
-                    let clean: String = p.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
-                    *p = format!("d{i}{clean}");
+fn es<E: std::fmt::Display>(e: E) -> String {
+    format!("{e}")
+}
+
+/// The process-wide ONNX Runtime environment, loaded from the library next to the models.
+fn environment(dir: &Path) -> Result<&'static Environment, String> {
+    static ENV: OnceLock<Result<Environment, String>> = OnceLock::new();
+    ENV.get_or_init(|| {
+        // DirectML.dll must already be loaded when the DirectML provider starts: load it by full path
+        #[cfg(windows)]
+        {
+            let dml = dir.join("DirectML.dll");
+            if dml.is_file() {
+                if let Ok(lib) = unsafe { libloading::Library::new(&dml) } {
+                    std::mem::forget(lib);
                 }
             }
         }
+        ort::init_from(dir.join(RUNTIME)).map_err(es)?.build().map_err(es)
+    })
+    .as_ref()
+    .map_err(|e| e.clone())
+}
+
+/// An ONNX session and the name of its (single) input.
+struct Model {
+    session: Session,
+    input: String,
+}
+
+impl Model {
+    fn open(dir: &Path, file: &str, gpu: bool, threads: usize) -> Result<Model, String> {
+        let env = environment(dir)?;
+        let mut b = Session::builder(env).map_err(es)?;
+        #[cfg(windows)]
+        if gpu {
+            use ort::ep::directml::PerformancePreference;
+            b = b
+                .with_execution_providers([ort::ep::DirectML::default().with_performance_preference(PerformancePreference::HighPerformance).build().error_on_failure()])
+                .map_err(es)?
+                .with_memory_pattern(false)
+                .map_err(es)?
+                .with_parallel_execution(false)
+                .map_err(es)?;
+        }
+        let _ = gpu;
+        let session = b.with_intra_threads(threads.max(1)).map_err(es)?.commit_from_file(dir.join(file)).map_err(|e| format!("{file}: {e}"))?;
+        let input = session.inputs()[0].name().to_string();
+        Ok(Model { session, input })
     }
-}
 
-/// Loads an ONNX model with a fixed input shape. `patch` repairs the dynamic-dimension names of the PaddleOCR / plate-OCR exports.
-fn load(path: &Path, shape: &[usize], patch: bool) -> Result<Plan, String> {
-    let run = || -> TractResult<Plan> {
-        let bytes = std::fs::read(path)?;
-        let mut mp = ModelProto::decode(&bytes[..])?;
-        if patch {
-            if let Some(g) = mp.graph.as_mut() {
-                g.value_info.clear();
-                for v in g.input.iter_mut().chain(g.output.iter_mut()) {
-                    fix_dims(v);
-                }
-            }
-        }
-        let m = tract_onnx::onnx().model_for_proto_model(&mp)?;
-        m.with_input_fact(0, f32::fact(shape).into())?.into_optimized()?.into_runnable()
-    };
-    run().map_err(|e| format!("{}: {e:#}", path.display()))
-}
+    fn run_f32(&mut self, shape: &[usize], data: &[f32]) -> Result<(Vec<usize>, Vec<f32>), String> {
+        let t = Tensor::from_array((shape.to_vec(), data.to_vec())).map_err(es)?;
+        let outs = self.session.run(ort::inputs![self.input.as_str() => t]).map_err(es)?;
+        let (sh, v) = outs[0].try_extract_tensor::<f32>().map_err(es)?;
+        Ok((sh.iter().map(|&d| d as usize).collect(), v.to_vec()))
+    }
 
-fn run(plan: &Plan, shape: &[usize], data: &[f32]) -> Result<Tensor, String> {
-    let t = Tensor::from_shape(shape, data).map_err(|e| format!("{e:#}"))?;
-    let mut out = plan.run(tvec!(t.into())).map_err(|e| format!("{e:#}"))?;
-    Ok(out.remove(0).into_tensor())
+    fn run_u8(&mut self, shape: &[usize], data: &[u8]) -> Result<Vec<f32>, String> {
+        let t = Tensor::from_array((shape.to_vec(), data.to_vec())).map_err(es)?;
+        let outs = self.session.run(ort::inputs![self.input.as_str() => t]).map_err(es)?;
+        let (_, v) = outs[0].try_extract_tensor::<f32>().map_err(es)?;
+        Ok(v.to_vec())
+    }
 }
 
 pub struct Engine {
     dir: std::path::PathBuf,
     dict: Vec<String>,
-    det: HashMap<(usize, usize), Plan>,
-    rec: HashMap<usize, Plan>,
-    pdet: Option<Plan>,
-    prec: Option<Plan>,
+    gpu: bool,
+    threads: usize,
+    det: Option<Model>,
+    rec: Option<Model>,
+    pdet: Option<Model>,
+    prec: Option<Model>,
 }
 
-/// True when every model file is present.
+/// True when every model file and the ONNX Runtime library are present.
 pub fn available(dir: &Path) -> bool {
-    FILES.iter().all(|f| dir.join(f).is_file())
+    FILES.iter().all(|f| dir.join(f).is_file()) && dir.join(RUNTIME).is_file()
 }
 
 impl Engine {
-    pub fn new(dir: &Path) -> Result<Engine, String> {
+    /// `gpu`: run on the GPU (DirectML, Windows) when it works, otherwise on the CPU with `threads` threads.
+    pub fn new(dir: &Path, gpu: bool, threads: usize) -> Result<Engine, String> {
         if !available(dir) {
             return Err(format!("modelli OCR mancanti in {}", dir.display()));
         }
@@ -219,7 +251,47 @@ impl Engine {
         if dict.last().is_some_and(|l| l.is_empty()) {
             dict.pop();
         }
-        Ok(Engine { dir: dir.to_path_buf(), dict, det: HashMap::new(), rec: HashMap::new(), pdet: None, prec: None })
+        let mut e = Engine { dir: dir.to_path_buf(), dict, gpu: false, threads, det: None, rec: None, pdet: None, prec: None };
+        if gpu && cfg!(windows) {
+            // the smallest model doubles as the check that the GPU provider really starts
+            match Model::open(dir, "text_rec.onnx", true, threads) {
+                Ok(m) => {
+                    e.gpu = true;
+                    e.rec = Some(m);
+                }
+                Err(err) => crate::log::log(format!("[ocr] GPU non disponibile ({err}): uso la CPU")),
+            }
+        }
+        Ok(e)
+    }
+
+    /// Engine configured from the environment (`VFA_OCR_GPU=0` forces the CPU); for tests and tools.
+    pub fn auto(dir: &Path) -> Result<Engine, String> {
+        let gpu = std::env::var("VFA_OCR_GPU").map_or(true, |v| v != "0");
+        Engine::new(dir, gpu, std::thread::available_parallelism().map_or(4, |n| n.get()) / 2)
+    }
+
+    pub fn gpu(&self) -> bool {
+        self.gpu
+    }
+
+    pub fn threads(&self) -> usize {
+        self.threads
+    }
+
+    pub fn device(&self) -> &'static str {
+        if self.gpu {
+            "GPU (DirectML)"
+        } else {
+            "CPU"
+        }
+    }
+
+    fn model<'a>(slot: &'a mut Option<Model>, dir: &Path, file: &str, gpu: bool, threads: usize) -> Result<&'a mut Model, String> {
+        if slot.is_none() {
+            *slot = Some(Model::open(dir, file, gpu, threads)?);
+        }
+        Ok(slot.as_mut().unwrap())
     }
 
     // ---------------------------------------------------------------- text
@@ -229,13 +301,6 @@ impl Engine {
         let ratio = long.clamp(320.0, 960.0) / long;
         let snap = |v: f32| (((v * ratio) / 32.0).round() as usize).max(1) * 32;
         let (dw, dh) = (snap(img.w as f32), snap(img.h as f32));
-        if !self.det.contains_key(&(dw, dh)) {
-            if self.det.len() >= 6 {
-                self.det.clear();
-            }
-            let plan = load(&self.dir.join("text_det.onnx"), &[1, 3, dh, dw], true)?;
-            self.det.insert((dw, dh), plan);
-        }
         let small = img.resize(dw, dh);
         const MEAN: [f32; 3] = [0.485, 0.456, 0.406];
         const STD: [f32; 3] = [0.229, 0.224, 0.225];
@@ -246,8 +311,7 @@ impl Engine {
                 data[c * dw * dh + i] = (small.rgb[i * 3 + (2 - c)] as f32 / 255.0 - MEAN[c]) / STD[c];
             }
         }
-        let out = run(&self.det[&(dw, dh)], &[1, 3, dh, dw], &data)?;
-        let prob = out.as_slice::<f32>().map_err(|e| format!("{e:#}"))?;
+        let (_, prob) = Self::model(&mut self.det, &self.dir, "text_det.onnx", self.gpu, self.threads)?.run_f32(&[1, 3, dh, dw], &data)?;
         if prob.len() != dw * dh {
             return Err(format!("uscita del detector inattesa ({} valori per {}x{})", prob.len(), dw, dh));
         }
@@ -320,10 +384,6 @@ impl Engine {
         let want = ((REC_H as f32 * crop.w as f32 / crop.h as f32).ceil() as usize).clamp(8, *REC_WIDTHS.last().unwrap());
         let bucket = *REC_WIDTHS.iter().find(|&&b| b >= want).unwrap();
         let rw = want.min(bucket);
-        if !self.rec.contains_key(&bucket) {
-            let plan = load(&self.dir.join("text_rec.onnx"), &[1, 3, REC_H, bucket], true)?;
-            self.rec.insert(bucket, plan);
-        }
         let small = crop.resize(rw, REC_H);
         let mut data = vec![0f32; 3 * REC_H * bucket];
         for y in 0..REC_H {
@@ -333,10 +393,8 @@ impl Engine {
                 }
             }
         }
-        let out = run(&self.rec[&bucket], &[1, 3, REC_H, bucket], &data)?;
-        let sh = out.shape().to_vec();
+        let (sh, v) = Self::model(&mut self.rec, &self.dir, "text_rec.onnx", self.gpu, self.threads)?.run_f32(&[1, 3, REC_H, bucket], &data)?;
         let (t, c) = (sh[sh.len() - 2], sh[sh.len() - 1]);
-        let v = out.as_slice::<f32>().map_err(|e| format!("{e:#}"))?;
         // the pad region produces only blanks, so decoding the whole sequence is harmless
         let (mut text, mut sum, mut n, mut last) = (String::new(), 0f32, 0u32, 0usize);
         for step in 0..t {
@@ -359,7 +417,7 @@ impl Engine {
             let (text, conf) = self.recognize_line(&img.crop(r))?;
             let text = text.trim().to_string();
             if !text.is_empty() {
-                found.push(Found { rect: r, text, conf });
+                found.push(Found { rect: r, text, conf, slots: Vec::new(), quality: 1.0 });
             }
         }
         Ok(found)
@@ -367,19 +425,52 @@ impl Engine {
 
     // -------------------------------------------------------------- plates
 
-    fn plate_plans(&mut self) -> Result<(), String> {
-        if self.pdet.is_none() {
-            self.pdet = Some(load(&self.dir.join("plate_det.onnx"), &[1, 3, PLATE_DET_SIZE, PLATE_DET_SIZE], false)?);
+    /// Reads one plate crop in several variants (framing, rotation / shear for an oblique view, sharpening, contrast) and combines the per-character probabilities: far more tolerant of blur, of a loose or off-centre box and
+    /// of an angled view than a single reading. Returns the probabilities (`PLATE_SLOTS × alphabet`) and the sharpness of the
+    /// crop (0..1).
+    fn read_plate_crop(&mut self, img: &Img, r: Rect) -> Result<(Vec<f32>, f32), String> {
+        let vocab = PLATE_ALPHABET.len();
+        let variants = &PLATE_VARIANTS;
+        // a padded copy of the surroundings is made once; every variant samples from its grey plane
+        let pad = Rect { x0: r.x0 - r.w() * 0.35, y0: r.y0 - r.h() * 0.35, x1: r.x1 + r.w() * 0.35, y1: r.y1 + r.h() * 0.35 };
+        let region = img.crop(pad);
+        let grey = grey_plane(&region);
+        let (ox, oy) = (pad.x0.floor().max(0.0), pad.y0.floor().max(0.0));
+        let local = Rect { x0: r.x0 - ox, y0: r.y0 - oy, x1: r.x1 - ox, y1: r.y1 - oy };
+        let mut acc = vec![0f32; PLATE_SLOTS * vocab];
+        let mut wsum = 0.0f32;
+        let mut quality = 0.0;
+        for (i, v) in variants.iter().enumerate() {
+            let mut g = plate_view(&grey, region.w, region.h, local, v);
+            if i == 0 {
+                quality = sharpness(&g);
+            }
+            if v.sharpen {
+                g = unsharp(&g);
+            }
+            if v.stretch {
+                stretch_contrast(&mut g);
+            }
+            // the plate recogniser takes 8-bit grey levels
+            let g8: Vec<u8> = g.iter().map(|x| (x + 0.5).clamp(0.0, 255.0) as u8).collect();
+            let p = Self::model(&mut self.prec, &self.dir, "plate_rec.onnx", self.gpu, self.threads)?.run_u8(&[1, PLATE_H, PLATE_W, 1], &g8)?;
+            if p.len() != PLATE_SLOTS * vocab {
+                return Err(format!("uscita OCR targhe inattesa ({} valori)", p.len()));
+            }
+            // a variant that is sure of itself counts more than one that hesitates
+            let m: f32 = p.chunks_exact(vocab).map(|s| s.iter().cloned().fold(0.0, f32::max)).sum::<f32>() / PLATE_SLOTS as f32;
+            let w = m * m;
+            wsum += w;
+            for (a, x) in acc.iter_mut().zip(&p) {
+                *a += w * x;
+            }
         }
-        if self.prec.is_none() {
-            self.prec = Some(load(&self.dir.join("plate_rec.onnx"), &[1, PLATE_H, PLATE_W, 1], true)?);
-        }
-        Ok(())
+        acc.iter_mut().for_each(|a| *a /= wsum.max(1e-6));
+        Ok((acc, quality))
     }
 
     /// Detects licence plates and reads them (upper-case letters and digits only).
     pub fn read_plates(&mut self, img: &Img) -> Result<Vec<Found>, String> {
-        self.plate_plans()?;
         // letterbox into the detector's square input
         let s = PLATE_DET_SIZE as f32 / img.w.max(img.h) as f32;
         let (nw, nh) = (((img.w as f32 * s).round() as usize).max(1), ((img.h as f32 * s).round() as usize).max(1));
@@ -393,8 +484,7 @@ impl Engine {
                 }
             }
         }
-        let out = run(self.pdet.as_ref().unwrap(), &[1, 3, n, n], &data)?;
-        let det = out.as_slice::<f32>().map_err(|e| format!("{e:#}"))?;
+        let (_, det) = Self::model(&mut self.pdet, &self.dir, "plate_det.onnx", self.gpu, self.threads)?.run_f32(&[1, 3, n, n], &data)?;
         let mut found = Vec::new();
         for row in det.chunks_exact(7) {
             // [batch, x1, y1, x2, y2, class, score] in letterboxed pixels
@@ -412,16 +502,10 @@ impl Engine {
             if r.w() < 4.0 || r.h() < 4.0 {
                 continue;
             }
-            let plate = img.crop(r).resize(PLATE_W, PLATE_H);
-            let gray: Vec<f32> = plate.rgb.chunks_exact(3).map(|p| 0.299 * p[0] as f32 + 0.587 * p[1] as f32 + 0.114 * p[2] as f32).collect();
-            let o = run(self.prec.as_ref().unwrap(), &[1, PLATE_H, PLATE_W, 1], &gray)?;
-            let v = o.as_slice::<f32>().map_err(|e| format!("{e:#}"))?;
+            let (slots, quality) = self.read_plate_crop(img, r)?;
             let vocab = PLATE_ALPHABET.len();
-            if v.len() != PLATE_SLOTS * vocab {
-                return Err(format!("uscita OCR targhe inattesa ({} valori)", v.len()));
-            }
             let (mut text, mut sum, mut cnt) = (String::new(), 0f32, 0u32);
-            for slot in v.chunks_exact(vocab) {
+            for slot in slots.chunks_exact(vocab) {
                 let (idx, &p) = slot.iter().enumerate().max_by(|a, b| a.1.partial_cmp(b.1).unwrap()).unwrap();
                 if PLATE_ALPHABET[idx] != b'_' {
                     text.push(PLATE_ALPHABET[idx] as char);
@@ -430,10 +514,123 @@ impl Engine {
                 }
             }
             if cnt >= 3 {
-                found.push(Found { rect: r, text, conf: (sum / cnt as f32) * row[6].min(1.0) });
+                found.push(Found { rect: r, text, conf: (sum / cnt as f32) * row[6].min(1.0), slots, quality });
             }
         }
         Ok(found)
+    }
+}
+
+/// One way of looking at a plate crop before it is read.
+#[derive(Clone, Copy)]
+struct PlateVariant {
+    /// growth of the box (fraction of its width / height; negative = tighter)
+    gx: f32,
+    gy: f32,
+    /// rotation in degrees and horizontal shear (fraction of the width over the full height)
+    angle: f32,
+    shear: f32,
+    sharpen: bool,
+    stretch: bool,
+}
+
+const fn pv(gx: f32, gy: f32, angle: f32, shear: f32, sharpen: bool, stretch: bool) -> PlateVariant {
+    PlateVariant { gx, gy, angle, shear, sharpen, stretch }
+}
+
+/// The variants used for every plate: framing, sharpening and contrast, plus a small rotation and shear each way for plates
+/// seen at an angle. (Undoing a horizontal motion blur by deconvolution was tried and did not help.)
+const PLATE_VARIANTS: [PlateVariant; 9] = [
+    pv(0.0, 0.0, 0.0, 0.0, false, false),
+    pv(-0.06, -0.10, 0.0, 0.0, false, false),
+    pv(0.12, 0.18, 0.0, 0.0, false, false),
+    pv(0.0, 0.0, 0.0, 0.0, true, false),
+    pv(0.0, 0.0, 0.0, 0.0, false, true),
+    pv(0.0, 0.0, -7.0, 0.0, false, false),
+    pv(0.0, 0.0, 7.0, 0.0, false, false),
+    pv(0.0, 0.0, 0.0, -0.15, false, false),
+    pv(0.0, 0.0, 0.0, 0.15, false, false),
+];
+
+fn grey_plane(img: &Img) -> Vec<f32> {
+    img.rgb.chunks_exact(3).map(|p| 0.299 * p[0] as f32 + 0.587 * p[1] as f32 + 0.114 * p[2] as f32).collect()
+}
+
+/// Resamples the plate box `r` of a grey plane to the recogniser's input size, with the variant's framing, rotation and shear.
+fn plate_view(grey: &[f32], w: usize, h: usize, r: Rect, v: &PlateVariant) -> Vec<f32> {
+    let (cx, cy) = r.center();
+    let (bw, bh) = (r.w() * (1.0 + v.gx), r.h() * (1.0 + v.gy));
+    let (sin, cos) = v.angle.to_radians().sin_cos();
+    // shrinking by more than 2x: average first so thin strokes survive
+    let down = ((bw / PLATE_W as f32).max(bh / PLATE_H as f32)).max(1.0);
+    let taps = if down >= 1.8 { 2 } else { 1 };
+    let mut out = vec![0f32; PLATE_W * PLATE_H];
+    for y in 0..PLATE_H {
+        for x in 0..PLATE_W {
+            let (mut sum, mut n) = (0f32, 0f32);
+            for ty in 0..taps {
+                for tx in 0..taps {
+                    let nx = (x as f32 + (tx as f32 + 0.5) / taps as f32) / PLATE_W as f32 - 0.5;
+                    let ny = (y as f32 + (ty as f32 + 0.5) / taps as f32) / PLATE_H as f32 - 0.5;
+                    let dx = nx * bw + v.shear * ny * bw;
+                    let dy = ny * bh;
+                    let sx = (cx + dx * cos - dy * sin - 0.5).clamp(0.0, (w - 1) as f32);
+                    let sy = (cy + dx * sin + dy * cos - 0.5).clamp(0.0, (h - 1) as f32);
+                    let (x0, y0) = (sx.floor() as usize, sy.floor() as usize);
+                    let (x1, y1) = ((x0 + 1).min(w - 1), (y0 + 1).min(h - 1));
+                    let (fx, fy) = (sx - x0 as f32, sy - y0 as f32);
+                    let top = grey[y0 * w + x0] * (1.0 - fx) + grey[y0 * w + x1] * fx;
+                    let bot = grey[y1 * w + x0] * (1.0 - fx) + grey[y1 * w + x1] * fx;
+                    sum += top * (1.0 - fy) + bot * fy;
+                    n += 1.0;
+                }
+            }
+            out[y * PLATE_W + x] = sum / n;
+        }
+    }
+    out
+}
+
+/// Sharpness of a plate crop in 0..1 (variance of the Laplacian, squashed): blurred crops score low.
+fn sharpness(g: &[f32]) -> f32 {
+    let (w, h) = (PLATE_W, PLATE_H);
+    let (mut sum, mut sum2, mut n) = (0f64, 0f64, 0f64);
+    for y in 1..h - 1 {
+        for x in 1..w - 1 {
+            let c = g[y * w + x];
+            let l = 4.0 * c - g[y * w + x - 1] - g[y * w + x + 1] - g[(y - 1) * w + x] - g[(y + 1) * w + x];
+            sum += l as f64;
+            sum2 += (l * l) as f64;
+            n += 1.0;
+        }
+    }
+    let var = (sum2 / n - (sum / n).powi(2)) as f32;
+    var / (var + 150.0)
+}
+
+fn unsharp(g: &[f32]) -> Vec<f32> {
+    let (w, h) = (PLATE_W, PLATE_H);
+    let mut out = g.to_vec();
+    for y in 1..h - 1 {
+        for x in 1..w - 1 {
+            let mut blur = 0.0;
+            for dy in 0..3 {
+                for dx in 0..3 {
+                    blur += g[(y + dy - 1) * w + x + dx - 1];
+                }
+            }
+            out[y * w + x] = (g[y * w + x] + 1.2 * (g[y * w + x] - blur / 9.0)).clamp(0.0, 255.0);
+        }
+    }
+    out
+}
+
+fn stretch_contrast(g: &mut [f32]) {
+    let mut sorted = g.to_vec();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let (lo, hi) = (sorted[sorted.len() * 2 / 100], sorted[sorted.len() * 98 / 100]);
+    if hi - lo > 8.0 {
+        g.iter_mut().for_each(|v| *v = ((*v - lo) / (hi - lo) * 255.0).clamp(0.0, 255.0));
     }
 }
 
@@ -441,11 +638,62 @@ impl Engine {
 mod tests {
     use super::*;
 
+    fn norm(s: &str) -> String {
+        s.chars().filter(|c| c.is_ascii_alphanumeric()).map(|c| c.to_ascii_uppercase()).collect()
+    }
+
+    /// OpenALPR-style benchmark: a folder of images, each with `<name>.txt` holding `file x y w h TEXT` lines.
+    /// `VFA_OCR_DIR=<models> VFA_PLATE_IMAGES=<dir> cargo test --release plate_images -- --nocapture`
+    #[test]
+    fn plate_images() {
+        let (Some(dir), Some(imgs)) = (std::env::var_os("VFA_OCR_DIR"), std::env::var_os("VFA_PLATE_IMAGES")) else { return };
+        let mut e = Engine::auto(Path::new(&dir)).unwrap();
+        let mut files: Vec<_> = std::fs::read_dir(&imgs).unwrap().flatten().map(|d| d.path()).filter(|p| p.extension().is_some_and(|x| x == "jpg")).collect();
+        files.sort();
+        let (mut truths, mut detected, mut exact, mut preds, mut false_pos, mut sim_sum) = (0, 0, 0, 0, 0, 0.0f32);
+        for f in files {
+            let truth: Vec<(Rect, String)> = std::fs::read_to_string(f.with_extension("txt"))
+                .unwrap_or_default()
+                .lines()
+                .filter_map(|l| {
+                    let c: Vec<&str> = l.split_whitespace().collect();
+                    if c.len() < 6 {
+                        return None;
+                    }
+                    let n: Vec<f32> = c[1..5].iter().filter_map(|v| v.parse().ok()).collect();
+                    (n.len() == 4).then(|| (Rect { x0: n[0], y0: n[1], x1: n[0] + n[2], y1: n[1] + n[3] }, norm(&c[5..].join(""))))
+                })
+                .collect();
+            let im = image::open(&f).unwrap().to_rgba8();
+            let img = Img::from_rgba(im.width() as usize, im.height() as usize, im.as_raw());
+            let found = e.read_plates(&img).unwrap();
+            preds += found.len();
+            let mut line = format!("{:<10}", f.file_stem().unwrap().to_string_lossy());
+            for (r, t) in &truth {
+                truths += 1;
+                let m = found.iter().filter(|p| p.rect.iou(r) >= 0.3).max_by(|a, b| a.conf.partial_cmp(&b.conf).unwrap());
+                match m {
+                    Some(p) => {
+                        detected += 1;
+                        exact += (&p.text == t) as i32;
+                        sim_sum += crate::ocr_vote::similarity(&p.text, t);
+                        line.push_str(&format!("  {} -> {}{}", t, p.text, if &p.text == t { " OK" } else { "" }));
+                    }
+                    None => line.push_str(&format!("  {} -> (non trovata)", t)),
+                }
+            }
+            false_pos += found.iter().filter(|p| !truth.iter().any(|(r, _)| p.rect.iou(r) >= 0.3)).count();
+            println!("{line}");
+        }
+        println!("TOTAL plates {truths}  detected {detected}  exact {exact} ({:.1}%)  mean char-acc on detected {:.1}%  predictions {preds}  false positives {false_pos}", 100.0 * exact as f32 / truths.max(1) as f32, 100.0 * sim_sum / detected.max(1) as f32);
+    }
+
     /// Manual probe: `VFA_OCR_DIR=<models> VFA_OCR_IMG=a.png;b.png cargo test --release ocr_probe -- --nocapture`
     #[test]
     fn ocr_probe() {
         let (Some(dir), Some(imgs)) = (std::env::var_os("VFA_OCR_DIR"), std::env::var("VFA_OCR_IMG").ok()) else { return };
-        let mut e = Engine::new(Path::new(&dir)).unwrap();
+        let mut e = Engine::auto(Path::new(&dir)).unwrap();
+        println!("device: {}", e.device());
         for f in imgs.split(';') {
             let im = image::open(f).unwrap().to_rgba8();
             let img = Img::from_rgba(im.width() as usize, im.height() as usize, im.as_raw());

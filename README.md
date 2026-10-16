@@ -196,7 +196,8 @@ Markdown or CSV. The test image is the current frame (or a synthetic one if no v
 ## Reading text and licence plates (OCR)
 
 The **OCR** section of the right-hand panel reads what is written in the picture. Everything runs locally and inside
-the program (pure-Rust ONNX runtime, models embedded in the executable): no network, no extra installation.
+the program (ONNX Runtime, models and runtime embedded in the executable, **on the GPU when one is available**): no
+network, no extra installation.
 
 | Mode | What it reads | Models |
 |---|---|---|
@@ -212,10 +213,16 @@ to go faster. A progress bar and a Cancel button appear while it runs (cancellin
 between readings (`AB123CD` / `A8123CD`). Readings of the same thing are grouped over time and position, and the final
 text is decided by a confidence-weighted vote per character. For plates:
 
-* the result is checked against national formats (IT/FR `AA 123 AA`, historic Italian, French pre-2009, Spanish,
-  Portuguese, Dutch, German) and a reading that fits a format wins over one that does not;
-* look-alike characters are corrected when that makes the plate valid (`O`/`0`, `I`/`1`, `B`/`8`, `S`/`5`, `Z`/`2` ...,
-  at most two substitutions);
+* every reading keeps the **probability of each character**, and the probabilities of all the frames are accumulated
+  (sharp, confident frames weigh more) instead of voting whole strings — a blurred frame adds evidence instead of
+  competing with a good one. Each plate crop is read in several variants (tighter / looser framing, sharpened,
+  contrast-stretched) and averaged;
+* the accumulated probabilities are decoded against national formats (IT/FR `AA 123 AA`, historic Italian, French
+  pre-2009, Spanish, Portuguese, Dutch, German, UK, Irish, Swiss, Belgian): the best reading that fits a format wins
+  unless it is much less likely than the unconstrained one, so `O`/`0`, `I`/`1`, `B`/`8`, `S`/`5` ... are settled by the
+  format (a digit is expected there, so it is read as a digit);
+* a plate moving fast is followed by predicting where it should be on the next frame, so it stays one result even when
+  it jumps several plate-widths between frames;
 * the list shows the format, the number of readings, the frame range, and — on hover — the discarded alternatives.
 
 **In the picture.** Boxes are drawn on every frame where the thing was read (cyan = text, green = plate with a valid
@@ -230,9 +237,11 @@ models see it, so this is also the way to read **small or distant plates and sma
 settings before reading it; this helps on small, blurred text but is much slower. The active filters (sharpen,
 denoise, upscale ...) are always applied, exactly as in the preview.
 
-**Speed and limits.** Roughly 1 s per Full HD frame for text and 0.15 s for plates on a modern CPU (the first reading
-also loads the models). Plates wider than about 100 px in a Full HD frame are found reliably; use a region for
-smaller ones. Text recognition is trained on horizontal and slightly rotated lines; heavily rotated or curved text,
+**Speed and limits.** On Windows the models run on the GPU through DirectML (any DirectX 12 GPU: NVIDIA, AMD, Intel;
+untick *Usa la GPU* to force the CPU, which is also the automatic fallback). A Full HD frame takes roughly 50–100 ms
+for text and plates on the GPU and 100–200 ms on a modern CPU; the first frame is slower (the models are compiled).
+On Linux the CPU build of ONNX Runtime is used. Plates wider than about 80 px in a Full HD frame are found reliably
+(the detector is the largest of its family, YOLOv9-s at 608 px); use a region for smaller ones. Text recognition is trained on horizontal and slightly rotated lines; heavily rotated or curved text,
 handwriting and very blurred text are read poorly. Plate formats are validated for the countries listed above; plates
 of other countries are still read, just shown as orange without a format.
 
@@ -347,7 +356,7 @@ src/
   export.rs    full-quality frame export, progress and cancellation
   nn.rs        Real-ESRGAN / waifu2x process control, CPU/GPU selection, start-up benchmark
   bench.rs     interactive benchmark engine
-  ocr.rs       OCR engine on the pure-Rust `tract` ONNX runtime: text detection / recognition, plate detection / recognition
+  ocr.rs       OCR engine on ONNX Runtime (DirectML on Windows): text detection / recognition, plate detection / recognition
   ocr_vote.rs  plate format validation and correction, grouping readings over frames, weighted voting
   ocr_job.rs   background OCR job: decode (filters, optional neural stage), read, vote
   app/ocr_ui.rs OCR panel, overlay on the viewer, region selection
