@@ -1,0 +1,25 @@
+name: build
+on: [push, workflow_dispatch]
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - { os: windows-latest, target: windows, exe: video-frame-analyzer.exe }
+          - { os: ubuntu-22.04, target: linux, exe: video-frame-analyzer }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Linux build deps
+        if: matrix.target == 'linux'
+        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev libxcb1-dev xz-utils unzip
+      - name: Fetch ffmpeg + Real-ESRGAN
+        shell: bash
+        run: scripts/fetch-assets.sh ${{ matrix.target }}
+      - name: Build CPU Real-ESRGAN runner
+        shell: bash
+        run: scripts/build-esrgan-cpu.sh ${{ matrix.target }}
+      - run: cargo build --release
+      - uses: actions/upload-artifact@v4
+        with: { name: "video-frame-analyzer-${{ matrix.target }}", path: "target/release/${{ matrix.exe }}" }
