@@ -445,9 +445,10 @@ fn benchmark_window_engine() {
     assert!(finished);
     assert_eq!(cells.len(), plan.total());
     // animevideov3 completes everywhere; x4plus on CPU times out at the first size and the next one is skipped
-    // (a software Vulkan device such as llvmpipe may legitimately exceed the short 2 s limit, the CPU may not)
+    // (a software Vulkan device such as llvmpipe may legitimately exceed the short 2 s limit — and then the larger size is
+    // skipped — the CPU may not)
     assert!(cells.iter().filter(|c| c.0 == 0 && c.2 < 0).all(|c| c.3.secs.is_some()));
-    assert!(cells.iter().filter(|c| c.0 == 0 && c.2 >= 0).all(|c| c.3.secs.is_some() || c.3.note.starts_with('>')));
+    assert!(cells.iter().filter(|c| c.0 == 0 && c.2 >= 0).all(|c| c.3.secs.is_some() || c.3.note.starts_with('>') || c.3.note == "saltato"));
     let x4: Vec<_> = cells.iter().filter(|c| c.0 == 1).collect();
     assert!(x4[0].3.note.starts_with('>') && x4[1].3.note == "saltato", "{x4:?}");
 }

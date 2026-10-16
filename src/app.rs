@@ -16,6 +16,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
+mod ocr_ui;
+use ocr_ui::OcrState;
+
 /// Default width of the right column (user-resizable); card widths derive from it.
 const SIDE_WIDTH: f32 = 380.0;
 
@@ -124,6 +127,7 @@ pub struct App {
     prev_playing: bool,
     force_apply: bool,
     busy_since: Option<Instant>,
+    ocr: OcrState,
 }
 
 impl App {
@@ -194,6 +198,7 @@ impl App {
             prev_playing: false,
             force_apply: false,
             busy_since: None,
+            ocr: OcrState::new(),
         };
         if let Some(p) = initial {
             app.dialog_tx.send(Dialog::Video(p)).ok();
@@ -220,6 +225,7 @@ impl App {
                 self.fit = true;
                 self.pan = Vec2::ZERO;
                 self.out_dir = None;
+                self.ocr.clear();
                 let vf = self.vf();
                 self.video = Some(Video::new(path, info, vf));
             }
@@ -448,6 +454,7 @@ impl App {
                 self.export_progress = None;
             }
         }
+        self.ocr_poll();
         let dropped = ctx.input(|i| i.raw.dropped_files.clone());
         if let Some(p) = dropped.into_iter().next().map(|f| f.path().to_path_buf()) {
             self.open_video(p);
@@ -573,6 +580,9 @@ impl App {
                 let (start, count) = (v.cur, self.export_count);
                 self.start_export(start, count);
             }
+        }
+        if ctx.input(|i| i.key_pressed(Key::T) && !i.modifiers.command) {
+            self.ocr_start(true);
         }
     }
 
@@ -958,9 +968,12 @@ impl App {
                         reveal(p);
                     }
                 }
+                ui.add_space(10.0);
+                ui.separator();
+                self.ocr_section(ui);
                 ui.add_space(8.0);
                 ui.collapsing("Scorciatoie", |ui| {
-                    ui.small("Spazio  riproduci/pausa (o avanti 1 in modalità fotogramma)\n← →  fotogramma ±1   Maiusc ±10   Ctrl ±1 s\nHome / End  inizio / fine\nF  modalità fotogramma per fotogramma\nE o Ctrl+S  esporta\nI / O  ingresso / uscita CUE   Esc  deseleziona CUE\nRotella: zoom   Trascina: sposta   Doppio clic: adatta");
+                    ui.small("Spazio  riproduci/pausa (o avanti 1 in modalità fotogramma)\n← →  fotogramma ±1   Maiusc ±10   Ctrl ±1 s\nHome / End  inizio / fine\nF  modalità fotogramma per fotogramma\nE o Ctrl+S  esporta\nT  OCR del fotogramma (Maiusc+trascina: area)\nI / O  ingresso / uscita CUE   Esc  deseleziona CUE\nRotella: zoom   Trascina: sposta   Doppio clic: adatta");
                 });
                 ui.checkbox(&mut self.nearest, "Pixel esatti (zoom senza smussare)");
             });
@@ -1324,13 +1337,15 @@ impl App {
                     self.pan = Vec2::ZERO;
                     scale = fit_scale;
                 }
-                if resp.dragged() {
+                if resp.dragged() && self.ocr_idle_drag(ui) {
                     self.pan += resp.drag_delta();
                     self.fit = false;
                     self.zoom = scale;
                 }
                 let img_rect = egui::Rect::from_center_size(rect.center() + if self.fit { Vec2::ZERO } else { self.pan }, size * scale);
                 painter.image(tex.id(), img_rect, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), Color32::WHITE);
+
+                ocr_ui::viewer_overlay(&mut self.ocr, ui, &painter, &resp, img_rect, v.cur);
 
                 let mut badge = format!("{}×{}  ({:.0}%)", size.x as u32, size.y as u32, scale * 100.0);
                 if use_ai {
@@ -1422,6 +1437,7 @@ impl eframe::App for App {
                     }
                 }
             }
+            self.ocr_auto(ctx);
             let tools = self.tools.clone().unwrap();
             let wake = self.wake.clone();
             let (nearest, playing) = (self.nearest, self.pb.playing);

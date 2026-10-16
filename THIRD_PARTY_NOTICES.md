@@ -13,6 +13,9 @@ substitute for the license texts shipped by each project.
 | **waifu2x-ncnn-vulkan** 20250915 and its model files | neural upscaling / denoising (GPU) | MIT | https://github.com/nihui/waifu2x-ncnn-vulkan |
 | **ncnn** | inference engine of `esrgan-cpu` (CPU runner) | BSD-3-Clause | https://github.com/Tencent/ncnn |
 | **stb_image / stb_image_write** (vendored in `native/`) | image I/O in `esrgan-cpu` | MIT / public domain | https://github.com/nothings/stb |
+| **PaddleOCR** PP-OCRv3 text detector and PP-OCRv5 "latin" recogniser (ONNX conversions from https://huggingface.co/monkt/paddleocr-onnx) | OCR of text in en, it, fr, de, nl, pt, es and other Latin-script languages | Apache-2.0 | https://github.com/PaddlePaddle/PaddleOCR |
+| **open-image-models** `yolo-v9-t-416-license-plates-end2end` | licence-plate detection | MIT | https://github.com/ankandrew/open-image-models |
+| **fast-plate-ocr** `european_mobile_vit_v2_ocr` | licence-plate recognition | MIT | https://github.com/ankandrew/fast-plate-ocr |
 | Microsoft VC++ OpenMP runtime (`vcomp140.dll`) | shipped next to the Windows Vulkan tools | Microsoft redistributable | https://learn.microsoft.com/cpp/windows/redistributing-visual-cpp-files |
 
 ### GPL note
@@ -26,6 +29,6 @@ upscaler filter) may then be unavailable.
 ## Rust crates (statically linked)
 
 The application links, among others: `eframe` / `egui` (MIT or Apache-2.0), `image` (MIT or Apache-2.0),
-`rfd` (MIT), `zstd` and `tar` (MIT or Apache-2.0), `dirs` (MIT or Apache-2.0) and their transitive dependencies,
+`rfd` (MIT), `tract-onnx` (ONNX inference for the OCR models; MIT or Apache-2.0), `zstd` and `tar` (MIT or Apache-2.0), `dirs` (MIT or Apache-2.0) and their transitive dependencies,
 all permissively licensed. Run `cargo tree` for the complete list or use `cargo-about` / `cargo-license` to generate
 the full set of license texts for a release.

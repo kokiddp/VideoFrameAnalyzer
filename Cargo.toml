@@ -13,6 +13,8 @@ zstd = "0.13"
 tar = "0.4"
 dirs = "6"
 image = { version = "0.25", default-features = false, features = ["png"] }
+tract-onnx = "0.21"
+prost = "0.11"
 
 [target.'cfg(windows)'.dependencies]
 rfd = "0.17"

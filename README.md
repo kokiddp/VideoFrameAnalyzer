@@ -23,13 +23,14 @@ possible quality** — with optional live filters (sharpening, denoising, upscal
 4. [Filters](#filters)
 5. [Neural enhancement (Real-ESRGAN / waifu2x)](#neural-enhancement-real-esrgan--waifu2x)
 6. [Exporting frames](#exporting-frames)
-7. [How the embedded software works](#how-the-embedded-software-works)
-8. [Building from source](#building-from-source)
-9. [Development and tests](#development-and-tests)
-10. [Architecture](#architecture)
-11. [Platform notes and limitations](#platform-notes-and-limitations)
-12. [Troubleshooting](#troubleshooting)
-13. [License](#license)
+7. [Reading text and licence plates (OCR)](#reading-text-and-licence-plates-ocr)
+8. [How the embedded software works](#how-the-embedded-software-works)
+9. [Building from source](#building-from-source)
+10. [Development and tests](#development-and-tests)
+11. [Architecture](#architecture)
+12. [Platform notes and limitations](#platform-notes-and-limitations)
+13. [Troubleshooting](#troubleshooting)
+14. [License](#license)
 
 ---
 
@@ -54,6 +55,13 @@ possible quality** — with optional live filters (sharpening, denoising, upscal
   average time of the frames done so far, shown as a smooth countdown) and a Cancel button.
 * The export follows the preview: with **Apply** on, the active filters (and neural stage) are baked into the files;
   with **Apply** off, the original frames are written untouched.
+
+**OCR**
+
+* Reads **text** (English, Italian, French, German, Dutch, Portuguese, Spanish and other Latin-script languages, accents
+  included) and **licence plates** from the paused frame, the CUE range or a series of frames — see
+  [Reading text and licence plates](#reading-text-and-licence-plates-ocr).
+* Results are drawn over the picture, listed with confidence and time, and can be copied or saved as CSV.
 
 **Image enhancement**
 
@@ -105,6 +113,8 @@ A pill with a spinner at the top-right of the picture tells you when a frame is 
 | `I` / `O` | Set CUE in-point / out-point at the current frame |
 | `Esc` | Clear the CUE range |
 | `C` (hold) | Show the original frame (A/B comparison, also bypasses the neural stage) |
+| `T` | OCR of the current frame (text and/or plates, as set in the OCR section) |
+| `Shift` + drag | Draw the OCR region on the picture |
 | `L` | Show / hide the log panel |
 | `Ctrl+O` | Open a video |
 | Mouse wheel / drag / double-click | Zoom / pan / fit to window |
@@ -183,6 +193,51 @@ Markdown or CSV. The test image is the current frame (or a synthetic one if no v
 
 ---
 
+## Reading text and licence plates (OCR)
+
+The **OCR** section of the right-hand panel reads what is written in the picture. Everything runs locally and inside
+the program (pure-Rust ONNX runtime, models embedded in the executable): no network, no extra installation.
+
+| Mode | What it reads | Models |
+|---|---|---|
+| **Testo** | text lines in the scene: signs, captions, shop fronts, documents. One recogniser covers English, Italian, French, German, Dutch, Portuguese, Spanish and the other Latin-script languages (accented letters, ß, ñ, ç ...), so there is no language to choose | PaddleOCR text detector + PP-OCRv5 "latin" recogniser |
+| **Targhe** | licence plates: a detector finds the plate, a dedicated recogniser reads it | YOLOv9 plate detector + European plate recogniser |
+| **Entrambi** | both; a plate is reported once (the duplicate text reading is dropped) | all of the above |
+
+**Scope.** *Fotogramma* reads the current frame (key `T`, or tick *OCR automatico a fotogramma fermo* to read every frame
+you stop on). *Intervallo CUE* reads the whole CUE range, *Serie* the next N frames; "analizza uno ogni" skips frames
+to go faster. A progress bar and a Cancel button appear while it runs (cancelling keeps what was read so far).
+
+**Series are voted, not just listed.** The same plate or sign appears on many frames, usually with small differences
+between readings (`AB123CD` / `A8123CD`). Readings of the same thing are grouped over time and position, and the final
+text is decided by a confidence-weighted vote per character. For plates:
+
+* the result is checked against national formats (IT/FR `AA 123 AA`, historic Italian, French pre-2009, Spanish,
+  Portuguese, Dutch, German) and a reading that fits a format wins over one that does not;
+* look-alike characters are corrected when that makes the plate valid (`O`/`0`, `I`/`1`, `B`/`8`, `S`/`5`, `Z`/`2` ...,
+  at most two substitutions);
+* the list shows the format, the number of readings, the frame range, and — on hover — the discarded alternatives.
+
+**In the picture.** Boxes are drawn on every frame where the thing was read (cyan = text, green = plate with a valid
+format, orange = plate that fits no known format). Click a box to copy its text. In the list, click a row to jump to
+its best frame, right-click to copy. *Confidenza minima* and *Solo targhe con formato valido* filter the list and the
+boxes; *Copia tutto* and *Salva CSV* (written next to the exported frames) export the visible results.
+
+**Region.** Hold `Shift` and drag on the picture to limit the reading to an area. The area is magnified before the
+models see it, so this is also the way to read **small or distant plates and small print**.
+
+**With the neural stage.** *Usa fotogramma potenziato (AI)* passes every frame through the active Real-ESRGAN / waifu2x
+settings before reading it; this helps on small, blurred text but is much slower. The active filters (sharpen,
+denoise, upscale ...) are always applied, exactly as in the preview.
+
+**Speed and limits.** Roughly 1 s per Full HD frame for text and 0.15 s for plates on a modern CPU (the first reading
+also loads the models). Plates wider than about 100 px in a Full HD frame are found reliably; use a region for
+smaller ones. Text recognition is trained on horizontal and slightly rotated lines; heavily rotated or curved text,
+handwriting and very blurred text are read poorly. Plate formats are validated for the countries listed above; plates
+of other countries are still read, just shown as orange without a format.
+
+---
+
 ## How the embedded software works
 
 The executable contains ffmpeg, Real-ESRGAN, waifu2x and the CPU runner **inside itself**, and **does not download
@@ -216,7 +271,7 @@ If no bundle was embedded (a build without `assets/`), the program falls back to
 **Steps**
 
 ```sh
-# 1. fetch ffmpeg + Real-ESRGAN + waifu2x into assets/<os>/
+# 1. fetch ffmpeg + Real-ESRGAN + waifu2x + the OCR models into assets/<os>/
 scripts/fetch-assets.sh windows        # or: linux
 
 # 2. build the CPU runner (ncnn without Vulkan) into assets/<os>/realesrgan/
@@ -255,6 +310,7 @@ export VFA_FFMPEG=/path/to/ffmpeg
 export VFA_REALESRGAN=/path/to/realesrgan-ncnn-vulkan    # optional
 export VFA_ESRGAN_CPU=/path/to/esrgan-cpu                # optional
 export VFA_WAIFU2X=/path/to/waifu2x-ncnn-vulkan          # optional
+export VFA_OCR_DIR=/path/to/assets/<os>/ocr              # OCR models (see scripts/fetch-assets.sh)
 cargo run
 cargo test --release -- --test-threads=1
 ```
@@ -267,6 +323,11 @@ videos and covers, among other things:
 * a **random-operation stress test** (seeks, speed and direction changes, pauses) that reports any picture freeze;
 * filter-chain generations, texture/frame consistency, export with and without filters, export progress/cancel;
 * Real-ESRGAN and waifu2x on GPU vs CPU, cancellation, benchmark logic, and the fixed width of the right-hand column.
+
+The OCR tests are manual probes that print what was read: `VFA_OCR_DIR=<models> VFA_OCR_IMG="a.png;b.png" cargo test
+--release ocr_probe -- --nocapture` (single images) and `VFA_FFMPEG=<ffmpeg> VFA_OCR_DIR=<models> VFA_OCR_VIDEO=clip.mp4
+cargo test --release job_probe -- --nocapture` (a series, with voting). The plate-format and voting logic has ordinary
+unit tests (`cargo test ocr_vote`).
 
 Useful environment variables for the stress test: `VFA_SEED`, `VFA_SECS`, `VFA_REVERSE_VIDEO` (use your own file).
 
@@ -286,6 +347,10 @@ src/
   export.rs    full-quality frame export, progress and cancellation
   nn.rs        Real-ESRGAN / waifu2x process control, CPU/GPU selection, start-up benchmark
   bench.rs     interactive benchmark engine
+  ocr.rs       OCR engine on the pure-Rust `tract` ONNX runtime: text detection / recognition, plate detection / recognition
+  ocr_vote.rs  plate format validation and correction, grouping readings over frames, weighted voting
+  ocr_job.rs   background OCR job: decode (filters, optional neural stage), read, vote
+  app/ocr_ui.rs OCR panel, overlay on the viewer, region selection
   tools.rs     locating / unpacking the embedded tools
   widgets.rs   knob, transport icons, CUE + seek bars, filter cards
   log.rs       in-memory log shown in the UI

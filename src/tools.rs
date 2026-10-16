@@ -16,6 +16,8 @@ pub struct Tools {
     /// waifu2x-ncnn-vulkan executable and its model directories (names without the `models-` prefix)
     pub waifu2x: Option<PathBuf>,
     pub w2x_models: Vec<String>,
+    /// Directory with the ONNX models used by the OCR engine (`ocr::Models::REQUIRED`), if bundled.
+    pub ocr_dir: Option<PathBuf>,
     pub temp: PathBuf,
 }
 
@@ -39,7 +41,8 @@ pub fn prepare() -> Result<Tools, String> {
         let realesrgan_cpu = std::env::var_os("VFA_ESRGAN_CPU").map(PathBuf::from);
         let waifu2x = std::env::var_os("VFA_WAIFU2X").map(PathBuf::from);
         let w2x_models = waifu2x.as_deref().map(w2x_model_dirs).unwrap_or_default();
-        return Ok(Tools { ffmpeg, realesrgan, realesrgan_cpu, models, waifu2x, w2x_models, temp });
+        let ocr_dir = std::env::var_os("VFA_OCR_DIR").map(PathBuf::from).filter(|d| d.is_dir());
+        return Ok(Tools { ffmpeg, realesrgan, realesrgan_cpu, models, waifu2x, w2x_models, ocr_dir, temp });
     }
 
     let dir = base.join(BUNDLE_ID.trim());
@@ -96,7 +99,10 @@ pub fn prepare() -> Result<Tools, String> {
     let waifu2x = w2x.exists().then_some(w2x);
     let w2x_models = waifu2x.as_deref().map(w2x_model_dirs).unwrap_or_default();
     crate::log::log(format!("[init] waifu2x={:?} modelli={:?}", waifu2x, w2x_models));
-    Ok(Tools { ffmpeg, realesrgan, realesrgan_cpu, models, waifu2x, w2x_models, temp })
+    let ocr = dir.join("ocr");
+    let ocr_dir = ocr.is_dir().then_some(ocr);
+    crate::log::log(format!("[init] ocr={:?}", ocr_dir));
+    Ok(Tools { ffmpeg, realesrgan, realesrgan_cpu, models, waifu2x, w2x_models, ocr_dir, temp })
 }
 
 fn w2x_model_dirs(exe: &Path) -> Vec<String> {

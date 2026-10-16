@@ -7,6 +7,9 @@ mod export;
 mod filters;
 mod log;
 mod nn;
+mod ocr;
+mod ocr_job;
+mod ocr_vote;
 mod player;
 mod probe;
 #[cfg(test)]
