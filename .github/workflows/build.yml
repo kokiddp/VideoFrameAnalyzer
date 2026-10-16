@@ -27,12 +27,23 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev libxcb1-dev xz-utils unzip cmake g++
       - name: Fetch ffmpeg, Real-ESRGAN and waifu2x
         shell: bash
-        run: scripts/fetch-assets.sh ${{ matrix.target }}
+        run: bash scripts/fetch-assets.sh ${{ matrix.target }}
+      # ncnn takes ~10 minutes to compile on the hosted runners: keep the build tree between runs
+      - name: Cache the ncnn build
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/ncnn_work
+          key: ncnn-${{ matrix.target }}-${{ hashFiles('scripts/build-esrgan-cpu.sh') }}
       - name: Build the CPU runner (ncnn)
         shell: bash
         run: |
-          if [ "${{ matrix.target }}" = windows ]; then export PATH="/c/mingw64/bin:$PATH"; fi
-          scripts/build-esrgan-cpu.sh ${{ matrix.target }}
+          if [ "${{ matrix.target }}" = windows ]; then
+            export PATH="/c/mingw64/bin:$PATH"
+            export NCNN_WORK="$(cygpath -u "$RUNNER_TEMP")/ncnn_work"
+          else
+            export NCNN_WORK="$RUNNER_TEMP/ncnn_work"
+          fi
+          bash scripts/build-esrgan-cpu.sh ${{ matrix.target }}
       - run: cargo build --release
       - uses: actions/upload-artifact@v4
         with:
