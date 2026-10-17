@@ -1,4 +1,5 @@
 //! Streaming decoder: runs ffmpeg and reads raw RGBA frames from its stdout.
+use crate::i18n::{tf};
 use crate::tools::{command, Tools};
 use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
@@ -71,7 +72,7 @@ impl Stream {
         crate::log::log(format!("[dec] {:?}", cmd));
         match cmd.spawn() {
             Err(e) => {
-                let _ = tx.send(Msg::End(Some(format!("cannot start ffmpeg: {e}"))));
+                let _ = tx.send(Msg::End(Some(tf("cannot start ffmpeg: {0}", &[&e]))));
             }
             Ok(mut child) => {
                 let stdout = child.stdout.take().unwrap();

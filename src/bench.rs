@@ -1,4 +1,5 @@
 //! Interactive benchmark of the neural engines: models x resolutions x processors.
+use crate::i18n::{tf, tr};
 use crate::filters::AiSettings;
 use crate::log::log;
 use crate::nn;
@@ -80,7 +81,7 @@ fn run_once(tools: &Tools, input: &std::path::Path, ai: &AiSettings, timeout: u6
         Ok(_) => Ok(secs),
         Err(_) if timed_out.load(Ordering::Relaxed) => Err(format!("> {timeout} s")),
         Err(e) if e == "annullato" => Err("annullato".into()),
-        Err(e) => Err(format!("errore: {}", e.lines().next().unwrap_or(""))),
+        Err(e) => Err(tf("errore: {0}", &[&e.lines().next().unwrap_or("")])),
     }
 }
 
@@ -115,7 +116,7 @@ pub fn run(tools: &Tools, plan: &Plan, source: Option<(u32, u32, Vec<u8>)>, canc
                     break 'outer;
                 }
                 let cell = if gave_up {
-                    Cell { secs: None, note: "saltato".into() }
+                    Cell { secs: None, note: tr("saltato").into() }
                 } else {
                     let mut r = run_once(tools, input, &ai, plan.timeout_secs, cancel);
                     // GPU tools fill shader / driver caches on first use: repeat once and report the warm run

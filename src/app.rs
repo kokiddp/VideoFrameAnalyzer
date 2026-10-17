@@ -2,6 +2,7 @@ use crate::decoder::Waker;
 use crate::export::{self, Format};
 use crate::bench::{self, Cell, Msg as BenchMsg, Plan, Spec};
 use crate::filters::{self, AiSettings, Engine, Filter};
+use crate::i18n::{self, tf, tr};
 use crate::probe;
 use crate::nn::{self, Benchmark, Device};
 use crate::player::Playback;
@@ -128,6 +129,7 @@ pub struct App {
     force_apply: bool,
     busy_since: Option<Instant>,
     ocr: OcrState,
+    updater: crate::update::Updater,
     bar_view: BarView,
     /// size of the image last drawn in the viewer: a change (upscaling, scaling filter) resets the view to "fit"
     shown_size: Vec2,
@@ -154,7 +156,7 @@ impl App {
             tools: None,
             prep_rx: Some(prx),
             prep_err: None,
-            wake,
+            wake: wake.clone(),
             video: None,
             filters: filters::default_filters(),
             filters_on: true,
@@ -202,6 +204,7 @@ impl App {
             prev_playing: false,
             force_apply: false,
             busy_since: None,
+            updater: crate::update::Updater::new(wake.clone()),
             ocr: OcrState::new(),
             bar_view: BarView::default(),
             shown_size: Vec2::ZERO,
@@ -236,7 +239,7 @@ impl App {
                 let vf = self.vf();
                 self.video = Some(Video::new(path, info, vf));
             }
-            Err(e) => self.status = Some((format!("Impossibile aprire il filmato: {e}"), true)),
+            Err(e) => self.status = Some((tf("Impossibile aprire il filmato: {0}", &[&e]), true)),
         }
     }
 
@@ -244,7 +247,7 @@ impl App {
         let tx = self.dialog_tx.clone();
         let wake = self.wake.clone();
         std::thread::spawn(move || {
-            if let Some(p) = rfd::FileDialog::new().set_title("Apri filmato").pick_file() {
+            if let Some(p) = rfd::FileDialog::new().set_title(tr("Apri filmato")).pick_file() {
                 let _ = tx.send(Dialog::Video(p));
                 wake();
             }
@@ -255,7 +258,7 @@ impl App {
         let tx = self.dialog_tx.clone();
         let wake = self.wake.clone();
         std::thread::spawn(move || {
-            if let Some(p) = rfd::FileDialog::new().set_title("Cartella di esportazione").pick_folder() {
+            if let Some(p) = rfd::FileDialog::new().set_title(tr("Cartella di esportazione")).pick_folder() {
                 let _ = tx.send(Dialog::OutDir(p));
                 wake();
             }
@@ -311,7 +314,7 @@ impl App {
         if self.export_rx.is_some() {
             return;
         }
-        // the export follows the "Applica" switch: on = active filters (+ neural stage), off = untouched frames.
+        // the export follows the tr("Applica") switch: on = active filters (+ neural stage), off = untouched frames.
         // (while playing the switch is temporarily off for the preview, so the remembered state counts)
         let filters_enabled = self.filters_on || self.filters_resume;
         let job = export::Job {
@@ -329,7 +332,7 @@ impl App {
         let wake = self.wake.clone();
         self.export_rx = Some(rx);
         self.export_status = None;
-        self.export_progress = Some((0.0, "Avvio…".into(), Instant::now()));
+        self.export_progress = Some((0.0, tr("Avvio…").into(), Instant::now()));
         self.export_eta = None;
         self.export_cancel.store(false, Ordering::Relaxed);
         let cancel = self.export_cancel.clone();
@@ -351,6 +354,7 @@ impl App {
     }
 
     fn poll(&mut self, ctx: &egui::Context) {
+        self.updater.poll();
         if let Some(rx) = &self.prep_rx {
             if let Ok(r) = rx.try_recv() {
                 match r {
@@ -444,7 +448,7 @@ impl App {
                     ExportMsg::Done(Ok(files)) => {
                         let last = files.last().cloned();
                         self.export_status = Some((
-                            format!("Esportati {} file. Ultimo: {}", files.len(), last.as_ref().map(|p| p.display().to_string()).unwrap_or_default()),
+                            tf("Esportati {0} file. Ultimo: {1}", &[&files.len(), &last.as_ref().map(|p| p.display().to_string()).unwrap_or_default()]),
                             false,
                         ));
                         self.last_export = last;
@@ -599,7 +603,7 @@ impl App {
         egui::Panel::top("top").show(ui, |ui| {
             ui.add_space(2.0);
             ui.horizontal(|ui| {
-                if ui.add(egui::Button::new(RichText::new("Apri filmato…").strong()).fill(ACCENT.gamma_multiply(0.55))).on_hover_text("Ctrl+O, oppure trascina il file nella finestra").clicked() {
+                if ui.add(egui::Button::new(RichText::new(tr("Apri filmato…")).strong()).fill(ACCENT.gamma_multiply(0.55))).on_hover_text(tr("Ctrl+O, oppure trascina il file nella finestra")).clicked() {
                     self.pick_video();
                 }
                 if let Some(v) = &self.video {
@@ -619,6 +623,7 @@ impl App {
                     }
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    options_menu(ui, &mut self.updater);
                     if let Some((s, err)) = &self.status {
                         ui.colored_label(if *err { Color32::LIGHT_RED } else { Color32::LIGHT_GREEN }, s);
                     }
@@ -653,40 +658,40 @@ impl App {
                 let fps = self.video.as_ref().map_or(25.0, |v| v.info.fps);
                 let n = b - a + 1;
                 ui.horizontal(|ui| {
-                    ui.colored_label(Color32::from_rgb(255, 200, 60), format!("CUE {a} – {b}  ({n} fotogrammi, {})", fmt_time(n as f64 / fps)));
-                    if ui.small_button("Vai all'inizio").clicked() {
+                    ui.colored_label(Color32::from_rgb(255, 200, 60), tf("CUE {0} – {1}  ({2} fotogrammi, {3})", &[&a, &b, &n, &fmt_time(n as f64 / fps)]));
+                    if ui.small_button(tr("Vai all'inizio")).clicked() {
                         self.pb.playing = false;
                         self.seek(a);
                     }
-                    if ui.small_button("Deseleziona (Esc)").clicked() {
+                    if ui.small_button(tr("Deseleziona (Esc)")).clicked() {
                         self.cue = None;
                     }
                     let busy = self.export_rx.is_some();
-                    if ui.add_enabled(!busy, egui::Button::new(RichText::new(format!("Esporta intervallo ({n})")).strong())).clicked() {
+                    if ui.add_enabled(!busy, egui::Button::new(RichText::new(tf("Esporta intervallo ({0})", &[&n])).strong())).clicked() {
                         self.start_export(a, n);
                     }
                 });
             }
             ui.horizontal(|ui| {
-                if icon_button(ui, Icon::First, "Inizio (Home)") {
+                if icon_button(ui, Icon::First, tr("Inizio (Home)")) {
                     self.pb.playing = false;
                     self.seek(0);
                 }
                 let rev_icon = if self.pb.playing && self.pb.reverse { Icon::Pause } else { Icon::PlayRev };
-                if icon_button(ui, rev_icon, "Riproduci all'indietro") {
+                if icon_button(ui, rev_icon, tr("Riproduci all'indietro")) {
                     self.toggle_play(true);
                 }
-                if icon_button(ui, Icon::StepBack, "Fotogramma precedente (←)") {
+                if icon_button(ui, Icon::StepBack, tr("Fotogramma precedente (←)")) {
                     self.step(-1);
                 }
                 let fwd_icon = if self.pb.playing && !self.pb.reverse { Icon::Pause } else { Icon::Play };
-                if icon_button(ui, fwd_icon, "Riproduci / pausa (Spazio)") {
+                if icon_button(ui, fwd_icon, tr("Riproduci / pausa (Spazio)")) {
                     self.toggle_play(false);
                 }
-                if icon_button(ui, Icon::StepFwd, "Fotogramma successivo (→)") {
+                if icon_button(ui, Icon::StepFwd, tr("Fotogramma successivo (→)")) {
                     self.step(1);
                 }
-                if icon_button(ui, Icon::Last, "Fine (End)") {
+                if icon_button(ui, Icon::Last, tr("Fine (End)")) {
                     if let Some(l) = last {
                         self.pb.playing = false;
                         self.seek(l);
@@ -694,8 +699,8 @@ impl App {
                 }
                 ui.separator();
                 ui.label(RichText::new(fmt_time(cur as f64 / fps)).monospace().size(16.0).strong());
-                ui.label(RichText::new(format!("fotogramma {cur}{}", last.map(|l| format!(" / {l}")).unwrap_or_default())).monospace().weak());
-                ui.add(egui::TextEdit::singleline(&mut self.goto_text).desired_width(60.0).hint_text("vai a #"));
+                ui.label(RichText::new(tf("fotogramma {0}{1}", &[&cur, &last.map(|l| format!(" / {l}")).unwrap_or_default()])).monospace().weak());
+                ui.add(egui::TextEdit::singleline(&mut self.goto_text).desired_width(60.0).hint_text(tr("vai a #")));
                 if ui.input(|i| i.key_pressed(Key::Enter)) && ui.memory(|m| m.focused().is_some()) {
                     if let Ok(n) = self.goto_text.trim().parse::<u64>() {
                         self.pb.playing = false;
@@ -707,20 +712,20 @@ impl App {
                     ui.spinner();
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.add_enabled(!self.bar_view.is_full(), egui::Button::new("Zoom 0")).on_hover_text("Mostra tutta la durata nelle barre").clicked() {
+                    if ui.add_enabled(!self.bar_view.is_full(), egui::Button::new(tr("Zoom 0"))).on_hover_text(tr("Mostra tutta la durata nelle barre")).clicked() {
                         self.bar_view.reset();
                     }
-                    if ui.button("-").on_hover_text("Riduci zoom barre").clicked() {
+                    if ui.button("-").on_hover_text(tr("Riduci zoom barre")).clicked() {
                         self.bar_view.zoom_at(max, 1.0 / 1.6, 0.5);
                     }
-                    if ui.button("+").on_hover_text("Ingrandisci barre (o rotella sulle barre)").clicked() {
+                    if ui.button("+").on_hover_text(tr("Ingrandisci barre (o rotella sulle barre)")).clicked() {
                         self.bar_view.zoom_at(max, 1.6, 0.5);
                     }
                     ui.label(RichText::new(format!("×{:.1}", self.bar_view.level(max))).monospace().weak());
                 });
             });
             ui.horizontal(|ui| {
-                ui.label("Velocità");
+                ui.label(tr("Velocità"));
                 let mut changed = knob(ui, &mut self.pb.speed, 0.05, 16.0);
                 ui.vertical(|ui| {
                     ui.horizontal(|ui| {
@@ -738,10 +743,10 @@ impl App {
                 });
                 let _ = changed;
                 ui.separator();
-                ui.checkbox(&mut self.pb.looping, "Ripeti");
+                ui.checkbox(&mut self.pb.looping, tr("Ripeti"));
                 if ui
-                    .checkbox(&mut self.frame_mode, "Fotogramma per fotogramma")
-                    .on_hover_text("Spazio / Invio / → avanzano di un fotogramma, ← indietro, E o Ctrl+S esporta (tasto F per attivare)")
+                    .checkbox(&mut self.frame_mode, tr("Fotogramma per fotogramma"))
+                    .on_hover_text(tr("Spazio / Invio / → avanzano di un fotogramma, ← indietro, E o Ctrl+S esporta (tasto F per attivare)"))
                     .changed()
                     && self.frame_mode
                 {
@@ -761,8 +766,8 @@ impl App {
                 let locked = self.filters_busy || self.pb.playing;
                 let n_active = self.filters.iter().filter(|f| f.enabled).count() + self.ai.enabled as usize;
                 let applying = self.video.as_ref().map_or(false, |v| v.shown_gen != v.gen || (v.loading && !self.pb.playing));
-                let open_filters = section_header(ui, "Filtri", |ui| {
-                    ui.label(format!("{n_active} attivi"));
+                let open_filters = section_header(ui, tr("Filtri"), |ui| {
+                    ui.label(tf("{0} attivi", &[&n_active]));
                     if applying {
                         ui.spinner();
                     }
@@ -770,23 +775,23 @@ impl App {
                 if open_filters {
                 ui.add_enabled_ui(!locked, |ui| {
                 ui.horizontal(|ui| {
-                    ui.checkbox(&mut self.filters_on, "Applica")
-                        .on_hover_text("Disattiva per vedere l'originale. Tieni premuto C per un confronto rapido.");
+                    ui.checkbox(&mut self.filters_on, tr("Applica"))
+                        .on_hover_text(tr("Disattiva per vedere l'originale. Tieni premuto C per un confronto rapido."));
                     if self.c_held {
-                        ui.colored_label(Color32::YELLOW, "originale (C)");
+                        ui.colored_label(Color32::YELLOW, tr("originale (C)"));
                     }
-                    if ui.small_button("Tutti on").clicked() {
+                    if ui.small_button(tr("Tutti on")).clicked() {
                         self.filters.iter_mut().for_each(|f| f.enabled = true);
                         self.filters_on = true;
                     }
-                    if ui.small_button("Tutti off").clicked() {
+                    if ui.small_button(tr("Tutti off")).clicked() {
                         self.filters.iter_mut().for_each(|f| f.enabled = false);
                         self.ai.enabled = false;
                     }
                 });
                 if let Some(v) = &self.video {
                     if let (Some(e), false) = (&v.error, self.vf().is_empty()) {
-                        ui.colored_label(Color32::LIGHT_RED, format!("Errore filtri: {}", e.lines().last().unwrap_or("")));
+                        ui.colored_label(Color32::LIGHT_RED, tf("Errore filtri: {0}", &[&e.lines().last().unwrap_or("")]));
                     }
                 }
                 ui.add_space(2.0);
@@ -795,9 +800,9 @@ impl App {
                 }
                 });
                 if self.pb.playing {
-                    ui.small("Filtri sospesi durante la riproduzione: tornano attivi alla pausa o in modalità fotogramma per fotogramma.");
+                    ui.small(tr("Filtri sospesi durante la riproduzione: tornano attivi alla pausa o in modalità fotogramma per fotogramma."));
                 } else if locked {
-                    ui.small("Applicazione dei filtri in corso: attendi che il fotogramma sia aggiornato…");
+                    ui.small(tr("Applicazione dei filtri in corso: attendi che il fotogramma sia aggiornato…"));
                 }
 
                 ui.add_space(2.0);
@@ -806,13 +811,13 @@ impl App {
                     if !self.ai.enabled {
                         None
                     } else if v.ai_busy {
-                        Some((format!("elaborazione… {:.0}s", v.ai_started.map_or(0.0, |t| t.elapsed().as_secs_f32())), Color32::YELLOW))
+                        Some((tf("elaborazione… {0}s", &[&format!("{:.0}", v.ai_started.map_or(0.0, |t| t.elapsed().as_secs_f32()))]), Color32::YELLOW))
                     } else if let Some(e) = &v.ai_err {
-                        Some((format!("errore: {}", e.lines().next().unwrap_or("")), Color32::LIGHT_RED))
+                        Some((tf("errore: {0}", &[&e.lines().next().unwrap_or("")]), Color32::LIGHT_RED))
                     } else if self.pb.playing {
-                        Some(("in pausa durante la riproduzione".to_string(), Color32::GRAY))
+                        Some((tr("in pausa durante la riproduzione").to_string(), Color32::GRAY))
                     } else if v.ai_key_matches(&self.ai_key()) {
-                        Some(("applicata".to_string(), Color32::LIGHT_GREEN))
+                        Some((tr("applicata").to_string(), Color32::LIGHT_GREEN))
                     } else {
                         None
                     }
@@ -823,8 +828,8 @@ impl App {
                     ui.set_max_width(cw);
                     ui.add_enabled_ui(has_ai, |ui| {
                         ui.horizontal(|ui| {
-                            ui.checkbox(&mut self.ai.enabled, RichText::new("Rete neurale").strong())
-                                .on_hover_text("Super-risoluzione / pulizia con rete neurale (GPU Vulkan o CPU).\nIn anteprima viene applicata solo al fotogramma fermo.");
+                            ui.checkbox(&mut self.ai.enabled, RichText::new(tr("Rete neurale")).strong())
+                                .on_hover_text(tr("Super-risoluzione / pulizia con rete neurale (GPU Vulkan o CPU).\nIn anteprima viene applicata solo al fotogramma fermo."));
                         });
                         if let Some((t, c)) = &ai_status {
                             ui.add(egui::Label::new(RichText::new(t).color(*c)).wrap());
@@ -833,7 +838,7 @@ impl App {
                             let tools = self.tools.clone();
                             let avail = |e: Engine| tools.as_ref().map_or(false, |t| nn::engine_available(t, e));
                             ui.horizontal(|ui| {
-                                ui.add_sized([LABEL_WIDTH, 18.0], egui::Label::new("Motore"));
+                                ui.add_sized([LABEL_WIDTH, 18.0], egui::Label::new(tr("Motore")));
                                 for e in Engine::ALL {
                                     ui.add_enabled_ui(avail(e), |ui| {
                                         ui.selectable_value(&mut self.ai.engine, e, e.label());
@@ -843,18 +848,18 @@ impl App {
                             let engine = self.ai.engine;
                             // processor (benchmarked per engine)
                             ui.horizontal(|ui| {
-                                ui.add_sized([LABEL_WIDTH, 18.0], egui::Label::new("Processore"));
+                                ui.add_sized([LABEL_WIDTH, 18.0], egui::Label::new(tr("Processore")));
                                 if self.bench_rx.is_some() {
                                     ui.spinner();
-                                    ui.small("test in corso…");
+                                    ui.small(tr("test in corso…"));
                                 } else {
                                     let devs: Vec<Device> = self.devices_for(engine).to_vec();
                                     let cur_dev = self.ai.device();
-                                    let sel = devs.iter().find(|d| d.id == cur_dev).map(|d| d.name.clone()).unwrap_or_else(|| "nessuno disponibile".into());
+                                    let sel = devs.iter().find(|d| d.id == cur_dev).map(|d| d.name.clone()).unwrap_or_else(|| tr("nessuno disponibile").into());
                                     let mut chosen = cur_dev;
                                     egui::ComboBox::from_id_salt("aidev").width(cw - LABEL_WIDTH - 70.0).truncate().selected_text(sel).show_ui(ui, |ui| {
                                         for (i, d) in devs.iter().enumerate() {
-                                            let label = format!("{} · {:.1}s{}", d.name, d.secs, if i == 0 { " · più veloce" } else { "" });
+                                            let label = format!("{} · {:.1}s{}", d.name, d.secs, if i == 0 { tr(" · più veloce") } else { "" });
                                             ui.selectable_value(&mut chosen, d.id, label);
                                         }
                                     });
@@ -862,7 +867,7 @@ impl App {
                                         self.ai.set_device(chosen);
                                         self.device_user_set[Engine::ALL.iter().position(|e| *e == engine).unwrap()] = true;
                                     }
-                                    if ui.small_button("Test").on_hover_text("Ripeti il test prestazioni (entrambi i motori)").clicked() {
+                                    if ui.small_button(tr("Test")).on_hover_text(tr("Ripeti il test prestazioni (entrambi i motori)")).clicked() {
                                         if let Some(t) = self.tools.clone() {
                                             self.devices.clear();
                                             self.device_user_set = [false; 2];
@@ -875,7 +880,7 @@ impl App {
                                 Engine::Esrgan => {
                                     let models = self.tools.as_ref().map(|t| t.models.clone()).unwrap_or_default();
                                     ui.horizontal(|ui| {
-                                        ui.add_sized([LABEL_WIDTH, 18.0], egui::Label::new("Modello"));
+                                        ui.add_sized([LABEL_WIDTH, 18.0], egui::Label::new(tr("Modello")));
                                         egui::ComboBox::from_id_salt("aimodel").width(cw - LABEL_WIDTH - 40.0).truncate().selected_text(self.ai.model.clone()).show_ui(ui, |ui| {
                                             for m in &models {
                                                 ui.selectable_value(&mut self.ai.model, m.clone(), m);
@@ -885,27 +890,27 @@ impl App {
                                     let fixed = self.ai.model.rsplit_once("-x").map_or(false, |(_, r)| r.starts_with(|c: char| c.is_ascii_digit()));
                                     ui.add_enabled_ui(!fixed, |ui| {
                                         ui.horizontal(|ui| {
-                                            ui.add_sized([LABEL_WIDTH, 18.0], egui::Label::new("Fattore"));
+                                            ui.add_sized([LABEL_WIDTH, 18.0], egui::Label::new(tr("Fattore")));
                                             for s in [2u32, 3, 4] {
                                                 ui.selectable_value(&mut self.ai.scale, s, format!("{s}×"));
                                             }
                                             if fixed {
-                                                ui.small("fisso");
+                                                ui.small(tr("fisso"));
                                             }
                                         });
                                     });
-                                    ui.add(egui::Label::new(RichText::new("animevideov3 = veloce · x4plus = massima qualità").small()).wrap());
+                                    ui.add(egui::Label::new(RichText::new(tr("animevideov3 = veloce · x4plus = massima qualità")).small()).wrap());
                                 }
                                 Engine::Waifu2x => {
                                     let models = self.tools.as_ref().map(|t| t.w2x_models.clone()).unwrap_or_default();
                                     let nice = |m: &str| match m {
-                                        "upconv_7_photo" => "foto (veloce)".to_string(),
-                                        "upconv_7_anime_style_art_rgb" => "anime/disegni (veloce)".to_string(),
-                                        "cunet" => "cunet (qualità, più lento)".to_string(),
+                                        "upconv_7_photo" => tr("foto (veloce)").to_string(),
+                                        "upconv_7_anime_style_art_rgb" => tr("anime/disegni (veloce)").to_string(),
+                                        "cunet" => tr("cunet (qualità, più lento)").to_string(),
                                         o => o.to_string(),
                                     };
                                     ui.horizontal(|ui| {
-                                        ui.add_sized([LABEL_WIDTH, 18.0], egui::Label::new("Modello"));
+                                        ui.add_sized([LABEL_WIDTH, 18.0], egui::Label::new(tr("Modello")));
                                         egui::ComboBox::from_id_salt("w2xmodel").width(cw - LABEL_WIDTH - 40.0).truncate().selected_text(nice(&self.ai.w2x_model)).show_ui(ui, |ui| {
                                             for m in &models {
                                                 ui.selectable_value(&mut self.ai.w2x_model, m.clone(), nice(m));
@@ -913,39 +918,39 @@ impl App {
                                         });
                                     });
                                     ui.horizontal(|ui| {
-                                        ui.add_sized([LABEL_WIDTH, 18.0], egui::Label::new("Pulizia"));
-                                        egui::ComboBox::from_id_salt("w2xnoise").selected_text(if self.ai.w2x_noise < 0 { "nessuna".to_string() } else { format!("livello {}", self.ai.w2x_noise) }).show_ui(ui, |ui| {
-                                            ui.selectable_value(&mut self.ai.w2x_noise, -1, "nessuna");
+                                        ui.add_sized([LABEL_WIDTH, 18.0], egui::Label::new(tr("Pulizia")));
+                                        egui::ComboBox::from_id_salt("w2xnoise").selected_text(if self.ai.w2x_noise < 0 { tr("nessuna").to_string() } else { tf("livello {0}", &[&self.ai.w2x_noise]) }).show_ui(ui, |ui| {
+                                            ui.selectable_value(&mut self.ai.w2x_noise, -1, tr("nessuna"));
                                             for n in 0..=3 {
-                                                ui.selectable_value(&mut self.ai.w2x_noise, n, format!("livello {n}"));
+                                                ui.selectable_value(&mut self.ai.w2x_noise, n, tf("livello {0}", &[&n]));
                                             }
                                         });
                                     });
                                     let cunet = self.ai.w2x_model == "cunet";
                                     ui.horizontal(|ui| {
-                                        ui.add_sized([LABEL_WIDTH, 18.0], egui::Label::new("Fattore"));
+                                        ui.add_sized([LABEL_WIDTH, 18.0], egui::Label::new(tr("Fattore")));
                                         ui.add_enabled_ui(cunet && self.ai.w2x_noise >= 0, |ui| {
-                                            ui.selectable_value(&mut self.ai.w2x_scale, 1, "1× (solo pulizia)");
+                                            ui.selectable_value(&mut self.ai.w2x_scale, 1, tr("1× (solo pulizia)"));
                                         });
                                         ui.selectable_value(&mut self.ai.w2x_scale, 2, "2×");
                                         ui.selectable_value(&mut self.ai.w2x_scale, 4, "4×");
                                     });
-                                    ui.add(egui::Label::new(RichText::new("waifu2x: più leggero di Real-ESRGAN; la pulizia riduce rumore/blocchi di compressione").small()).wrap());
+                                    ui.add(egui::Label::new(RichText::new(tr("waifu2x: più leggero di Real-ESRGAN; la pulizia riduce rumore/blocchi di compressione")).small()).wrap());
                                 }
                             }
                         }
                     });
                     if !has_ai {
-                        ui.small("Nessun motore neurale incluso in questa build.");
+                        ui.small(tr("Nessun motore neurale incluso in questa build."));
                     }
                 });
-                if ui.button("Benchmark…").on_hover_text("Confronta modelli, risoluzioni e processori (CPU/GPU)").clicked() {
+                if ui.button(tr("Benchmark…")).on_hover_text(tr("Confronta modelli, risoluzioni e processori (CPU/GPU)")).clicked() {
                     self.open_bench();
                 }
                 }
 
                 ui.add_space(8.0);
-                if section_title(ui, "Esporta fotogrammi") {
+                if section_title(ui, tr("Esporta fotogrammi")) {
                 egui::ComboBox::from_id_salt("fmt").selected_text(self.format.label()).show_ui(ui, |ui| {
                     for f in Format::ALL {
                         ui.selectable_value(&mut self.format, f, f.label());
@@ -955,16 +960,16 @@ impl App {
                     let on = self.filters_on || self.filters_resume;
                     let n = self.filters.iter().filter(|f| f.enabled).count() + self.ai.enabled as usize;
                     let (txt, col) = if on && n > 0 {
-                        (format!("Si esporta con {n} filtri/elaborazioni attivi (come l'anteprima)"), Color32::LIGHT_GREEN)
+                        (tf("Si esporta con {0} filtri/elaborazioni attivi (come l'anteprima)", &[&n]), Color32::LIGHT_GREEN)
                     } else if on {
-                        ("«Applica» è attivo ma nessun filtro è selezionato: fotogrammi originali".to_string(), Color32::GRAY)
+                        (tr("«Applica» è attivo ma nessun filtro è selezionato: fotogrammi originali").to_string(), Color32::GRAY)
                     } else {
-                        ("«Applica» è disattivato: si esportano i fotogrammi originali".to_string(), Color32::YELLOW)
+                        (tr("«Applica» è disattivato: si esportano i fotogrammi originali").to_string(), Color32::YELLOW)
                     };
                     ui.add(egui::Label::new(RichText::new(txt).color(col).small()).wrap());
                 }
                 ui.horizontal(|ui| {
-                    ui.label("Fotogrammi consecutivi");
+                    ui.label(tr("Fotogrammi consecutivi"));
                     ui.add(egui::DragValue::new(&mut self.export_count).range(1..=100000));
                 });
                 if let Some(d) = self.effective_out_dir() {
@@ -972,14 +977,14 @@ impl App {
                         ui.small(d.display().to_string());
                     });
                 }
-                if ui.button("Cartella di destinazione…").clicked() {
+                if ui.button(tr("Cartella di destinazione…")).clicked() {
                     self.pick_dir();
                 }
                 let busy = self.export_rx.is_some();
                 ui.add_enabled_ui(self.video.is_some() && !busy, |ui| {
                     if ui
-                        .add_sized([ui.available_width(), 34.0], egui::Button::new(RichText::new("Esporta fotogramma corrente").strong()).fill(ACCENT.gamma_multiply(0.55)))
-                        .on_hover_text("E oppure Ctrl+S")
+                        .add_sized([ui.available_width(), 34.0], egui::Button::new(RichText::new(tr("Esporta fotogramma corrente")).strong()).fill(ACCENT.gamma_multiply(0.55)))
+                        .on_hover_text(tr("E oppure Ctrl+S"))
                         .clicked()
                     {
                         if let Some(v) = &self.video {
@@ -992,7 +997,7 @@ impl App {
                     ui.colored_label(if *err { Color32::LIGHT_RED } else { Color32::LIGHT_GREEN }, s);
                 }
                 if let Some(p) = &self.last_export {
-                    if ui.small_button("Mostra nella cartella").clicked() {
+                    if ui.small_button(tr("Mostra nella cartella")).clicked() {
                         reveal(p);
                     }
                 }
@@ -1000,10 +1005,10 @@ impl App {
                 ui.add_space(10.0);
                 self.ocr_section(ui);
                 ui.add_space(8.0);
-                ui.collapsing("Scorciatoie", |ui| {
-                    ui.small("Spazio  riproduci/pausa (o avanti 1 in modalità fotogramma)\n← →  fotogramma ±1   Maiusc ±10   Ctrl ±1 s\nHome / End  inizio / fine\nF  modalità fotogramma per fotogramma\nE o Ctrl+S  esporta\nT  OCR del fotogramma (Maiusc+trascina: area)\nI / O  ingresso / uscita CUE   Esc  deseleziona CUE\nRotella: zoom   Trascina: sposta   Doppio clic: adatta");
+                ui.collapsing(tr("Scorciatoie"), |ui| {
+                    ui.small(tr("Spazio  riproduci/pausa (o avanti 1 in modalità fotogramma)\n← →  fotogramma ±1   Maiusc ±10   Ctrl ±1 s\nHome / End  inizio / fine\nF  modalità fotogramma per fotogramma\nE o Ctrl+S  esporta\nT  OCR del fotogramma (Maiusc+trascina: area)\nI / O  ingresso / uscita CUE   Esc  deseleziona CUE\nRotella: zoom   Trascina: sposta   Doppio clic: adatta\nRotella sulle barre: zoom   Maiusc+rotella: scorri"));
                 });
-                ui.checkbox(&mut self.nearest, "Pixel esatti (zoom senza smussare)");
+                ui.checkbox(&mut self.nearest, tr("Pixel esatti (zoom senza smussare)"));
             });
         });
     }
@@ -1096,7 +1101,7 @@ impl App {
         let cols = &self.bench.columns;
         let sep = if csv { "," } else { " | " };
         let mut out = String::new();
-        let mut header = vec!["Modello".to_string(), "Risoluzione".to_string()];
+        let mut header = vec![tr("Modello").to_string(), tr("Risoluzione").to_string()];
         header.extend(cols.iter().map(|c| c.1.clone()));
         out.push_str(&header.join(sep));
         out.push('\n');
@@ -1127,11 +1132,11 @@ impl App {
             return;
         }
         let mut open = true;
-        egui::Window::new("Benchmark rete neurale").open(&mut open).default_size([820.0, 560.0]).show(ctx, |ui| {
+        egui::Window::new(tr("Benchmark rete neurale")).id(egui::Id::unique("bench_window")).open(&mut open).default_size([820.0, 560.0]).show(ctx, |ui| {
             let running = self.bench.running;
             ui.add_enabled_ui(!running, |ui| {
                 ui.horizontal_wrapped(|ui| {
-                    ui.label(RichText::new("Modelli").strong());
+                    ui.label(RichText::new(tr("Modelli")).strong());
                     for e in Engine::ALL {
                         ui.separator();
                         ui.label(e.label());
@@ -1141,60 +1146,60 @@ impl App {
                     }
                 });
                 ui.horizontal_wrapped(|ui| {
-                    ui.label(RichText::new("Risoluzione").strong());
+                    ui.label(RichText::new(tr("Risoluzione")).strong());
                     for h in &mut self.bench.heights {
                         ui.checkbox(&mut h.1, format!("{}p", h.0));
                     }
                     ui.separator();
-                    ui.label(RichText::new("Processori").strong());
+                    ui.label(RichText::new(tr("Processori")).strong());
                     for d in &mut self.bench.devices {
                         ui.checkbox(&mut d.2, &d.1);
                     }
                 });
                 ui.horizontal(|ui| {
-                    ui.label("Tempo massimo per prova");
+                    ui.label(tr("Tempo massimo per prova"));
                     ui.add(egui::DragValue::new(&mut self.bench.timeout).range(10..=600).suffix(" s"));
-                    ui.small("Oltre il limite la prova è interrotta e le risoluzioni maggiori dello stesso modello sono saltate.");
+                    ui.small(tr("Oltre il limite la prova è interrotta e le risoluzioni maggiori dello stesso modello sono saltate."));
                 });
             });
             ui.horizontal(|ui| {
                 if running {
                     let frac = if self.bench.total > 0 { self.bench.done as f32 / self.bench.total as f32 } else { 0.0 };
                     let elapsed = self.bench.started.elapsed().as_secs_f64();
-                    let eta = if frac > 0.02 { format!("rimanente ~{}", fmt_dur(elapsed * (1.0 - frac as f64) / frac as f64)) } else { "rimanente: calcolo…".into() };
+                    let eta = if frac > 0.02 { tf("rimanente ~{0}", &[&fmt_dur(elapsed * (1.0 - frac as f64) / frac as f64)]) } else { tr("rimanente: calcolo…").into() };
                     ui.add(egui::ProgressBar::new(frac).desired_width(260.0).text(format!("{}/{}  ·  {eta}", self.bench.done, self.bench.total)));
-                    if ui.button("Annulla").clicked() {
+                    if ui.button(tr("Annulla")).clicked() {
                         self.bench.cancel.store(true, Ordering::Relaxed);
                     }
                 } else {
                     let ready = self.bench_ready();
-                    if ui.add_enabled(ready, egui::Button::new(RichText::new("Avvia benchmark").strong())).clicked() {
+                    if ui.add_enabled(ready, egui::Button::new(RichText::new(tr("Avvia benchmark")).strong())).clicked() {
                         self.start_benchmark();
                     }
                     if !ready {
-                        ui.small(if self.bench_rx.is_some() { "attendi la fine del test iniziale…" } else { "seleziona almeno un modello, una risoluzione e un processore" });
+                        ui.small(if self.bench_rx.is_some() { tr("attendi la fine del test iniziale…") } else { tr("seleziona almeno un modello, una risoluzione e un processore") });
                     }
                     if self.bench.plan.is_some() {
-                        if ui.button("Copia (Markdown)").clicked() {
+                        if ui.button(tr("Copia (Markdown)")).clicked() {
                             ui.ctx().copy_text(self.bench_table_text(false));
                         }
-                        if ui.button("Copia (CSV)").clicked() {
+                        if ui.button(tr("Copia (CSV)")).clicked() {
                             ui.ctx().copy_text(self.bench_table_text(true));
                         }
                     }
                 }
             });
             ui.small(match self.video.as_ref().and_then(|v| v.shown.as_ref()) {
-                Some(_) => "Immagine di prova: il fotogramma corrente, ridimensionato a ogni risoluzione.",
-                None => "Immagine di prova: sintetica (apri un filmato per usare un suo fotogramma).",
+                Some(_) => tr("Immagine di prova: il fotogramma corrente, ridimensionato a ogni risoluzione."),
+                None => tr("Immagine di prova: sintetica (apri un filmato per usare un suo fotogramma)."),
             });
             ui.separator();
             if let Some(plan) = self.bench.plan.clone() {
                 let cols = self.bench.columns.clone();
                 egui::ScrollArea::both().auto_shrink([false, false]).show(ui, |ui| {
                     egui::Grid::new("bench_grid").striped(true).spacing([14.0, 4.0]).show(ui, |ui| {
-                        ui.label(RichText::new("Modello").strong());
-                        ui.label(RichText::new("Risoluzione").strong());
+                        ui.label(RichText::new(tr("Modello")).strong());
+                        ui.label(RichText::new(tr("Risoluzione")).strong());
                         for c in &cols {
                             ui.label(RichText::new(&c.1).strong());
                         }
@@ -1236,7 +1241,7 @@ impl App {
                     });
                 });
             } else {
-                ui.label("Misura il tempo per fotogramma di ogni modello, a diverse risoluzioni, su CPU e GPU.");
+                ui.label(tr("Misura il tempo per fotogramma di ogni modello, a diverse risoluzioni, su CPU e GPU."));
             }
         });
         self.bench.open = open;
@@ -1261,7 +1266,8 @@ impl App {
         let elapsed = started.elapsed().as_secs_f64();
         // countdown between estimates: remaining time as of the last measurement minus the time passed since
         let eta = self.export_eta.map(|(v, at)| (v - at.elapsed().as_secs_f64()).max(0.0));
-        egui::Window::new("Esportazione in corso")
+        egui::Window::new(tr("Esportazione in corso"))
+            .id(egui::Id::unique("export_window"))
             .collapsible(false)
             .resizable(false)
             .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
@@ -1270,15 +1276,15 @@ impl App {
                 ui.add(egui::ProgressBar::new(frac.clamp(0.0, 1.0)).show_percentage().desired_width(ui.available_width()).animate(true));
                 ui.label(text);
                 ui.horizontal(|ui| {
-                    ui.label(format!("Trascorso {}", fmt_dur(elapsed)));
+                    ui.label(tf("Trascorso {0}", &[&fmt_dur(elapsed)]));
                     ui.separator();
                     ui.label(match eta {
-                        Some(e) if e < 1.5 => "Rimanente: pochi istanti".to_string(),
-                        Some(e) => format!("Rimanente ~{}", fmt_dur(e)),
-                        None => "Rimanente: calcolo…".to_string(),
+                        Some(e) if e < 1.5 => tr("Rimanente: pochi istanti").to_string(),
+                        Some(e) => tf("Rimanente ~{0}", &[&fmt_dur(e)]),
+                        None => tr("Rimanente: calcolo…").to_string(),
                     });
                 });
-                if ui.button("Annulla").clicked() {
+                if ui.button(tr("Annulla")).clicked() {
                     self.export_cancel.store(true, Ordering::Relaxed);
                 }
             });
@@ -1290,15 +1296,15 @@ impl App {
         let lines = if self.show_log { crate::log::snapshot() } else { Vec::new() };
         let header = |this: &mut App, ui: &mut egui::Ui, lines: &[String]| {
             ui.horizontal(|ui| {
-                ui.toggle_value(&mut this.show_log, "Log").on_hover_text("Mostra / nascondi (tasto L)");
+                ui.toggle_value(&mut this.show_log, tr("Log")).on_hover_text(tr("Mostra / nascondi (tasto L)"));
                 if this.show_log {
-                    if ui.small_button("Copia").clicked() {
+                    if ui.small_button(tr("Copia")).clicked() {
                         ui.ctx().copy_text(lines.join("\n"));
                     }
-                    if ui.small_button("Pulisci").clicked() {
+                    if ui.small_button(tr("Pulisci")).clicked() {
                         crate::log::clear();
                     }
-                    ui.small(format!("{} righe", lines.len()));
+                    ui.small(tf("{0} righe", &[&lines.len()]));
                 }
             });
         };
@@ -1310,7 +1316,7 @@ impl App {
             header(self, ui, &lines);
             egui::ScrollArea::both().stick_to_bottom(true).auto_shrink([false, false]).show_rows(ui, 14.0, lines.len(), |ui, range| {
                 for l in &lines[range] {
-                    let col = if l.contains("rror") || l.contains("errore") || l.contains("fallit") { Color32::LIGHT_RED } else { ui.visuals().text_color() };
+                    let col = if l.contains("rror") || l.contains("errore") || l.contains("erreur") || l.contains("fallit") || l.contains("chec") { Color32::LIGHT_RED } else { ui.visuals().text_color() };
                     ui.add(egui::Label::new(RichText::new(l).monospace().size(11.0).color(col)).extend());
                 }
             });
@@ -1325,11 +1331,11 @@ impl App {
             let painter = ui.painter_at(rect);
 
             if let Some(msg) = &self.prep_err {
-                painter.text(rect.center(), Align2::CENTER_CENTER, format!("Errore: {msg}"), FontId::proportional(18.0), Color32::LIGHT_RED);
+                painter.text(rect.center(), Align2::CENTER_CENTER, tf("Errore: {0}", &[&msg]), FontId::proportional(18.0), Color32::LIGHT_RED);
                 return;
             }
             if self.tools.is_none() {
-                painter.text(rect.center(), Align2::CENTER_CENTER, "Preparazione componenti (solo al primo avvio)…", FontId::proportional(18.0), Color32::GRAY);
+                painter.text(rect.center(), Align2::CENTER_CENTER, tr("Preparazione componenti (solo al primo avvio)…"), FontId::proportional(18.0), Color32::GRAY);
                 return;
             }
             let ai_active = self.ai_active();
@@ -1347,8 +1353,8 @@ impl App {
                     Color32::from_gray(90),
                     egui::Stroke::NONE,
                 ));
-                painter.text(zone.center() + Vec2::new(0.0, 14.0), Align2::CENTER_CENTER, "Trascina qui un filmato", FontId::proportional(22.0), Color32::from_gray(190));
-                painter.text(zone.center() + Vec2::new(0.0, 46.0), Align2::CENTER_CENTER, "oppure premi Ctrl+O", FontId::proportional(14.0), Color32::from_gray(120));
+                painter.text(zone.center() + Vec2::new(0.0, 14.0), Align2::CENTER_CENTER, tr("Trascina qui un filmato"), FontId::proportional(22.0), Color32::from_gray(190));
+                painter.text(zone.center() + Vec2::new(0.0, 46.0), Align2::CENTER_CENTER, tr("oppure premi Ctrl+O"), FontId::proportional(14.0), Color32::from_gray(120));
                 return;
             };
 
@@ -1402,18 +1408,18 @@ impl App {
                 painter.galley(bg.min + Vec2::new(7.0, 4.0), g, Color32::WHITE);
                 zoom_pending = Some((scale, fit_scale));
             } else if v.loading {
-                painter.text(rect.center(), Align2::CENTER_CENTER, "Caricamento…", FontId::proportional(18.0), Color32::GRAY);
+                painter.text(rect.center(), Align2::CENTER_CENTER, tr("Caricamento…"), FontId::proportional(18.0), Color32::GRAY);
             }
             // processing indicator: from a filter / frame change until the correct filtered frame is on screen
             let filters_pending = v.shown_gen != v.gen || (v.loading && (!playing || v.hard_wait));
             let ai_pending = ai_active && !playing && v.ai_err.is_none() && !v.ai_key_matches(&ai_key);
             if filters_pending || ai_pending {
                 let label = if v.ai_busy && ai_pending && !filters_pending {
-                    format!("Rete neurale… {:.0}s", v.ai_started.map_or(0.0, |t| t.elapsed().as_secs_f32()))
+                    tf("Rete neurale… {0}s", &[&format!("{:.0}", v.ai_started.map_or(0.0, |t| t.elapsed().as_secs_f32()))])
                 } else if filters_pending {
-                    "Applicazione filtri…".to_string()
+                    tr("Applicazione filtri…").to_string()
                 } else {
-                    "Rete neurale…".to_string()
+                    tr("Rete neurale…").to_string()
                 };
                 let galley = painter.layout_no_wrap(label, FontId::proportional(14.0), Color32::WHITE);
                 let w = galley.size().x + 44.0;
@@ -1428,10 +1434,10 @@ impl App {
                 y += 18.0;
             };
             if ai_active && playing {
-                note("Rete neurale attiva solo a fotogramma fermo".into(), Color32::YELLOW);
+                note(tr("Rete neurale attiva solo a fotogramma fermo").into(), Color32::YELLOW);
             }
             if let Some(e) = &v.ai_err {
-                note(format!("AI: {}", e.lines().next().unwrap_or("")), Color32::LIGHT_RED);
+                note(tf("AI: {0}", &[&e.lines().next().unwrap_or("")]), Color32::LIGHT_RED);
             }
             if let Some(e) = &v.error {
                 for l in e.lines().take(6) {
@@ -1443,7 +1449,7 @@ impl App {
                 let mut act = None;
                 ui.scope_builder(egui::UiBuilder::new().max_rect(bar), |ui| {
                     ui.horizontal(|ui| {
-                        if ui.button("Adatta").on_hover_text("Doppio clic sull'immagine").clicked() {
+                        if ui.button(tr("Adatta")).on_hover_text(tr("Doppio clic sull'immagine")).clicked() {
                             act = Some(fit_scale);
                         }
                         if ui.button("100%").clicked() {
@@ -1555,6 +1561,7 @@ impl eframe::App for App {
         self.viewer(ui);
         self.export_window(&ui.ctx().clone());
         self.bench_window(&ui.ctx().clone());
+        self.updater.window(&ui.ctx().clone());
     }
 }
 
@@ -1636,7 +1643,7 @@ fn section_title(ui: &mut egui::Ui, text: &str) -> bool {
 /// Collapsible section heading (click to fold); `extra` is drawn to the right of the title.
 /// Returns whether the section is open.
 fn section_header(ui: &mut egui::Ui, text: &str, extra: impl FnOnce(&mut egui::Ui)) -> bool {
-    let id = egui::Id::new(("section", text));
+    let id = egui::Id::unique(("section", text));
     let mut open = ui.data(|d| d.get_temp::<bool>(id)).unwrap_or(true);
     ui.horizontal(|ui| {
         let (r, _) = ui.allocate_exact_size(Vec2::new(4.0, 18.0), Sense::hover());
@@ -1658,4 +1665,46 @@ fn section_header(ui: &mut egui::Ui, text: &str, extra: impl FnOnce(&mut egui::U
     });
     ui.add_space(2.0);
     open
+}
+
+const REPO_URL: &str = "https://github.com/kokiddp/VideoFrameAnalyzer";
+
+/// "Options" menu: language selection and credits.
+fn options_menu(ui: &mut egui::Ui, updater: &mut crate::update::Updater) {
+    ui.menu_button(tr("Opzioni"), |ui| {
+        ui.label(RichText::new(tr("Lingua")).strong());
+        for l in i18n::Lang::ALL {
+            if ui.radio(i18n::lang() == l, l.native_name()).clicked() {
+                i18n::set_lang(l);
+                ui.close();
+            }
+        }
+        ui.separator();
+        ui.label(RichText::new(tr("Aggiornamenti")).strong());
+        updater.menu(ui);
+        ui.separator();
+        ui.label(RichText::new(tr("Informazioni")).strong());
+        ui.label(format!("Video Frame Analyzer - {}", tf("Versione {0}", &[&env!("CARGO_PKG_VERSION")])));
+        ui.label(format!("{}: Gabriele Coquillard - ELK-Lab", tr("Sviluppato da")));
+        ui.label(format!("{}:", tr("Repository del progetto")));
+        if ui.link(REPO_URL).clicked() {
+            open_url(REPO_URL);
+            ui.close();
+        }
+    });
+}
+
+fn open_url(url: &str) {
+    #[cfg(windows)]
+    {
+        let _ = std::process::Command::new("explorer").arg(url).spawn();
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let _ = std::process::Command::new("xdg-open").arg(url).spawn();
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("open").arg(url).spawn();
+    }
 }

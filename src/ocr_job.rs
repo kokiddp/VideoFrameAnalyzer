@@ -1,5 +1,6 @@
 //! Background OCR job: decodes frames (with the preview's filters, optionally neural-enhanced), reads text and/or plates,
 //! then groups the readings of the whole series into one result per thing seen.
+use crate::i18n::{tr};
 use crate::decoder::{Frame, Stream, Waker};
 use crate::filters::AiSettings;
 use crate::nn;
@@ -103,7 +104,7 @@ fn process_frame(tools: &Tools, eng: &mut Engine, frame: &Frame, spec: &Spec, ca
 
 /// Runs the job. `progress(done, total)` counts frames analysed; setting `cancel` ends it early with the results so far.
 pub fn run(tools: &Tools, engine: &SharedEngine, spec: &Spec, cancel: &AtomicBool, progress: &dyn Fn(u64, u64)) -> Result<Vec<Hit>, String> {
-    let dir = tools.ocr_dir.as_deref().ok_or("modelli OCR non inclusi in questa build")?;
+    let dir = tools.ocr_dir.as_deref().ok_or(tr("modelli OCR non inclusi in questa build"))?;
     let workers = worker_count(spec.gpu);
     let cores = std::thread::available_parallelism().map_or(4, |n| n.get());
     let threads = if spec.gpu { 2 } else { (cores / workers).max(2) };
@@ -187,7 +188,7 @@ fn run_with(tools: &Tools, engines: &mut [Engine], spec: &Spec, cancel: &AtomicB
                 None => {
                     if let Some(end) = &stream.ended {
                         if decoded == 0 {
-                            decode_err = Some(end.clone().unwrap_or_else(|| "nessun fotogramma decodificato".into()));
+                            decode_err = Some(end.clone().unwrap_or_else(|| tr("nessun fotogramma decodificato").into()));
                         }
                         break;
                     }

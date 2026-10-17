@@ -5,6 +5,7 @@ mod bench;
 mod decoder;
 mod export;
 mod filters;
+mod i18n;
 mod log;
 mod nn;
 mod ocr;
@@ -15,10 +16,12 @@ mod probe;
 #[cfg(test)]
 mod selftest;
 mod tools;
+mod update;
 mod video;
 mod widgets;
 
 fn main() -> eframe::Result {
+    i18n::init();
     let initial = std::env::args_os().nth(1).map(std::path::PathBuf::from);
     let icon = image::load_from_memory_with_format(include_bytes!("../icon/icon-256.png"), image::ImageFormat::Png)
         .ok()

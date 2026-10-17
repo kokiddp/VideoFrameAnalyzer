@@ -1,6 +1,6 @@
 [package]
 name = "video-frame-analyzer"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
 license = "MIT"
 authors = ["Gabriele Coquillard - ELK-Lab"]
@@ -13,6 +13,8 @@ zstd = "0.13"
 tar = "0.4"
 dirs = "6"
 image = { version = "0.25", default-features = false, features = ["png"] }
+serde_json = "1"
+sha2 = "0.10"
 
 [target.'cfg(windows)'.dependencies]
 rfd = "0.17"

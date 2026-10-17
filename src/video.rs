@@ -1,4 +1,5 @@
 //! Playback state of one opened video: frame cache, decoder stream and on-demand AI stage.
+use crate::i18n::{tf};
 use crate::decoder::{Frame, Killer, Stream, Waker};
 use crate::filters::AiSettings;
 use crate::nn;
@@ -412,7 +413,7 @@ impl Video {
         }
         let max = ctx.input(|i| i.max_texture_side);
         if f.w > max || f.h > max {
-            self.error = Some(format!("Immagine {}×{} oltre il limite della GPU ({max})", f.w, f.h));
+            self.error = Some(tf("Immagine {0}×{1} oltre il limite della GPU ({2})", &[&f.w, &f.h, &max]));
             return;
         }
         let opts = if nearest { TextureOptions::NEAREST } else { TextureOptions::LINEAR };
@@ -451,7 +452,7 @@ impl Video {
                             Ok(f) => {
                                 let max = ctx.input(|i| i.max_texture_side);
                                 if f.w > max || f.h > max {
-                                    self.ai_err = Some(format!("Risultato {}x{} oltre il limite della GPU ({max}); usa un fattore minore", f.w, f.h));
+                                    self.ai_err = Some(tf("Risultato {0}x{1} oltre il limite della GPU ({2}); usa un fattore minore", &[&f.w, &f.h, &max]));
                                     self.ai_err_at = Some((idx, key));
                                 } else if gen == self.gen {
                                     let img = ColorImage::from_rgba_unmultiplied([f.w, f.h], &f.rgba);

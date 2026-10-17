@@ -1,4 +1,5 @@
 //! Full-quality frame export (single frame or a consecutive range).
+use crate::i18n::{tf, tr};
 use crate::decoder::seek_args;
 use crate::filters::AiSettings;
 use crate::nn;
@@ -25,11 +26,11 @@ impl Format {
     pub const ALL: [Format; 5] = [Format::Png, Format::Tiff, Format::Jpeg, Format::Webp, Format::Bmp];
     pub fn label(self) -> &'static str {
         match self {
-            Format::Png => "PNG (lossless)",
-            Format::Tiff => "TIFF (lossless)",
-            Format::Jpeg => "JPEG (qualità massima)",
-            Format::Webp => "WebP (lossless)",
-            Format::Bmp => "BMP (non compresso)",
+            Format::Png => tr("PNG (lossless)"),
+            Format::Tiff => tr("TIFF (lossless)"),
+            Format::Jpeg => tr("JPEG (qualità massima)"),
+            Format::Webp => tr("WebP (lossless)"),
+            Format::Bmp => tr("BMP (non compresso)"),
         }
     }
     pub fn ext(self) -> &'static str {
@@ -136,14 +137,14 @@ fn extract(tools: &Tools, job: &Job, fmt: Format, pattern: &Path, cancel: &Atomi
     });
     let status = child.lock().unwrap().take().unwrap().wait().map_err(|e| e.to_string())?;
     if cancel.load(Ordering::Relaxed) {
-        return Err("Annullato".into());
+        return Err(tr("Annullato").into());
     }
     if !status.success() {
         let t = errtext.lock().unwrap().clone();
         crate::log::log(format!("[export] ffmpeg fallito:\n{t}"));
         let mut v: Vec<&str> = t.lines().filter(|l| !l.trim().is_empty()).collect();
         let keep = v.len().saturating_sub(5);
-        return Err(format!("Export fallito:\n{}", v.split_off(keep).join("\n")));
+        return Err(tf("Export fallito:\n{0}", &[&v.split_off(keep).join("\n")]));
     }
     Ok(())
 }
@@ -175,13 +176,13 @@ impl Rate {
 /// Runs an export. `progress(fraction 0..1, text, estimated seconds remaining)` is called as work advances;
 /// `cancel` aborts it. The estimate comes from the measured speed of the current phase, never from a guess.
 pub fn run(tools: &Tools, job: &Job, progress: &dyn Fn(f32, String, Option<f64>), cancel: &AtomicBool) -> Result<Vec<PathBuf>, String> {
-    std::fs::create_dir_all(&job.out_dir).map_err(|e| format!("cartella: {e}"))?;
+    std::fs::create_dir_all(&job.out_dir).map_err(|e| tf("cartella: {0}", &[&e]))?;
     let stem = job.video.file_stem().and_then(|s| s.to_str()).unwrap_or("video").to_string();
     let ext = job.format.ext();
     let total = job.count.max(1);
     let started = Instant::now();
     let mut written = Vec::new();
-    progress(0.0, "Avvio…".into(), None);
+    progress(0.0, tr("Avvio…").into(), None);
 
     match &job.ai {
         None => {
@@ -189,7 +190,7 @@ pub fn run(tools: &Tools, job: &Job, progress: &dyn Fn(f32, String, Option<f64>)
             let rate = Rate::new();
             extract(tools, job, job.format, &pattern, cancel, &|n| {
                 let remaining = rate.push(n).map(|r| total.saturating_sub(n) as f64 / r);
-                progress((n as f32 / total as f32).min(1.0), format!("Fotogramma {}/{}", n.min(total), total), remaining)
+                progress((n as f32 / total as f32).min(1.0), tf("Fotogramma {0}/{1}", &[&n.min(total), &total]), remaining)
             })?;
             for i in 0..job.count {
                 let p = job.out_dir.join(name(&job.video, job.start + i, ext));
@@ -209,13 +210,13 @@ pub fn run(tools: &Tools, job: &Job, progress: &dyn Fn(f32, String, Option<f64>)
                 let rate = Rate::new();
                 extract(tools, job, Format::Png, &tmp.join("in_%06d.png"), cancel, &|n| {
                     let _ = rate.push(n);
-                    progress(0.02 * (n as f32 / total as f32).min(1.0), format!("Estrazione {}/{}", n.min(total), total), None)
+                    progress(0.02 * (n as f32 / total as f32).min(1.0), tf("Estrazione {0}/{1}", &[&n.min(total), &total]), None)
                 })?;
                 // moving average of the time one frame takes in the neural stage (including conversion / writing)
                 let mut per_frame: Option<f64> = None;
                 for i in 0..job.count {
                     if cancel.load(Ordering::Relaxed) {
-                        return Err("Annullato".into());
+                        return Err(tr("Annullato").into());
                     }
                     let idx = job.start + i;
                     let input = tmp.join(format!("in_{idx:06}.png"));
@@ -230,12 +231,12 @@ pub fn run(tools: &Tools, job: &Job, progress: &dyn Fn(f32, String, Option<f64>)
                         }
                         None => 0.02,
                     };
-                    progress(frac, format!("Rete neurale: fotogramma {}/{}", i + 1, total), remaining);
+                    progress(frac, tf("Rete neurale: fotogramma {0}/{1}", &[&(i + 1), &total]), remaining);
                     crate::log::log(format!("[export] AI {}/{}", i + 1, total));
                     let frame_start = Instant::now();
                     let upscaled = tmp.join(format!("up_{idx:06}.png"));
                     nn::run_file(tools, &input, &upscaled, ai, cancel)
-                        .map_err(|e| if e == "annullato" { "Annullato".to_string() } else { e })?;
+                        .map_err(|e| if e == "annullato" { tr("Annullato").to_string() } else { e })?;
                     let dest = job.out_dir.join(name(&job.video, idx, ext));
                     if job.format == Format::Png {
                         std::fs::copy(&upscaled, &dest).map_err(|e| e.to_string())?;
@@ -267,8 +268,8 @@ pub fn run(tools: &Tools, job: &Job, progress: &dyn Fn(f32, String, Option<f64>)
         }
     }
     if written.is_empty() {
-        return Err("Nessun fotogramma esportato (posizione oltre la fine del filmato?)".into());
+        return Err(tr("Nessun fotogramma esportato (posizione oltre la fine del filmato?)").into());
     }
-    progress(1.0, "Completato".into(), Some(0.0));
+    progress(1.0, tr("Completato").into(), Some(0.0));
     Ok(written)
 }

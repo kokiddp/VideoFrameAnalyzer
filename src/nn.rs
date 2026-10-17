@@ -1,4 +1,5 @@
 //! Neural upscaling: Real-ESRGAN and waifu2x (ncnn). GPU through the Vulkan tools, CPU through our own ncnn runner.
+use crate::i18n::{tf, tr};
 use crate::decoder::Frame;
 use crate::filters::{AiSettings, Engine};
 use crate::log::log;
@@ -56,7 +57,7 @@ pub fn engine_available(tools: &Tools, e: Engine) -> bool {
 
 fn build_command(tools: &Tools, ai: &AiSettings, input: &Path, output: &Path) -> Result<Command, String> {
     let device = ai.device();
-    let missing = || format!("{} non incluso in questo eseguibile", ai.engine.label());
+    let missing = || tf("{0} non incluso in questo eseguibile", &[&ai.engine.label()]);
     let mut cmd;
     match ai.engine {
         Engine::Esrgan => {
@@ -121,7 +122,7 @@ pub fn run_file(tools: &Tools, input: &Path, output: &Path, ai: &AiSettings, can
     log(format!("[AI] {:?}", cmd));
     let t0 = Instant::now();
     let mut child = cmd.spawn().map_err(|e| {
-        let m = format!("{} non avviabile: {e}", ai.engine.label());
+        let m = tf("{0} non avviabile: {1}", &[&ai.engine.label(), &e]);
         log(format!("[AI] {m}"));
         m
     })?;
@@ -169,11 +170,9 @@ pub fn run_file(tools: &Tools, input: &Path, output: &Path, ai: &AiSettings, can
     log(format!("[AI] terminato: {status} in {:.1}s", t0.elapsed().as_secs_f64()));
     if !status.success() || !output.exists() {
         let t: Vec<String> = tail.iter().rev().take(4).rev().cloned().collect();
-        return Err(format!(
-            "{} fallito ({status}); {}\n{}",
-            ai.engine.label(),
-            if device < 0 { "CPU" } else { "GPU Vulkan disponibile?" },
-            t.join("\n")
+        return Err(tf(
+            "{0} fallito ({1}); {2}\n{3}",
+            &[&ai.engine.label(), &status, &if device < 0 { "CPU" } else { tr("GPU Vulkan disponibile?") }, &t.join("\n")],
         ));
     }
     Ok(tail)
@@ -182,7 +181,7 @@ pub fn run_file(tools: &Tools, input: &Path, output: &Path, ai: &AiSettings, can
 pub fn enhance_frame(tools: &Tools, frame: &Frame, ai: &AiSettings, cancel: &AtomicBool) -> Result<Frame, String> {
     log(format!("[AI] fotogramma {} {}x{} -> {}", frame.index, frame.w, frame.h, ai.key()));
     let (inp, outp) = (temp_path(tools, "png"), temp_path(tools, "png"));
-    let img = image::RgbaImage::from_raw(frame.w as u32, frame.h as u32, frame.rgba.clone()).ok_or("frame non valido")?;
+    let img = image::RgbaImage::from_raw(frame.w as u32, frame.h as u32, frame.rgba.clone()).ok_or(tr("frame non valido"))?;
     img.save(&inp).map_err(|e| e.to_string())?;
     let r = run_file(tools, &inp, &outp, ai, cancel);
     let _ = std::fs::remove_file(&inp);
@@ -280,7 +279,7 @@ pub fn benchmark(tools: &Tools, force: bool) -> Benchmark {
             ai.set_device(id);
             // GPU tools compile shaders / fill driver caches on their first run: warm up, then time
             let runs = if id >= 0 { 2 } else { 1 };
-            let mut last: Result<Vec<String>, String> = Err("nessuna esecuzione".into());
+            let mut last: Result<Vec<String>, String> = Err(tr("nessuna esecuzione").into());
             let mut secs = 0.0;
             for _ in 0..runs {
                 let _ = std::fs::remove_file(&outp);
@@ -309,7 +308,7 @@ pub fn benchmark(tools: &Tools, force: bool) -> Benchmark {
             match last {
                 Ok(lines) => {
                     let name = if id < 0 {
-                        format!("CPU ({} thread)", cpu_threads())
+                        tf("CPU ({0} thread)", &[&cpu_threads()])
                     } else {
                         lines
                             .iter()

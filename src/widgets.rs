@@ -1,3 +1,4 @@
+use crate::i18n::{tr};
 use eframe::egui::{self, Color32, Pos2, Sense, Stroke, Vec2};
 
 /// Rotary knob mapping a drag onto a logarithmic range. Returns true when the value changed.
@@ -48,7 +49,7 @@ pub fn knob(ui: &mut egui::Ui, value: &mut f32, min: f32, max: f32) -> bool {
     let ang = a0 + t * sweep;
     let dir = Vec2::new(ang.cos(), ang.sin());
     p.line_segment([center + dir * (r * 0.35), center + dir * (r * 0.95)], Stroke::new(3.0, vis.strong_text_color()));
-    resp.on_hover_text("Trascina (su/destra = più veloce) o usa la rotella. Doppio clic: 1×");
+    resp.on_hover_text(tr("Trascina (su/destra = più veloce) o usa la rotella. Doppio clic: 1×"));
     changed
 }
 
@@ -329,7 +330,7 @@ pub fn range_bars(ui: &mut egui::Ui, pos: u64, max: u64, cue: Option<(u64, u64)>
     }
 
     if shown_cue.is_none() {
-        p.text(cue_rect.center(), egui::Align2::CENTER_CENTER, "CUE: trascina per selezionare un intervallo (I / O = punti di ingresso e uscita)",
+        p.text(cue_rect.center(), egui::Align2::CENTER_CENTER, tr("CUE: trascina per selezionare un intervallo (I / O = punti di ingresso e uscita)"),
             egui::FontId::proportional(10.5), weak);
     }
     if let Some((a, b)) = shown_cue {
@@ -355,8 +356,8 @@ pub fn range_bars(ui: &mut egui::Ui, pos: u64, max: u64, cue: Option<(u64, u64)>
         p.line_segment([Pos2::new(px, ruler_rect.top()), Pos2::new(px, bar_rect.bottom() - 1.0)], Stroke::new(2.0, vis.strong_text_color()));
         p.circle_filled(Pos2::new(px, bar_rect.center().y), 6.0, vis.strong_text_color());
     }
-    cue_resp.on_hover_text("Trascina: seleziona l'intervallo · trascina i bordi gialli: regola · clic: deseleziona · rotella: zoom");
-    ruler_resp.on_hover_text("Rotella: zoom sul puntatore · Maiusc+rotella o trascina: scorri");
+    cue_resp.on_hover_text(tr("Trascina: seleziona l'intervallo · trascina i bordi gialli: regola · clic: deseleziona · rotella: zoom"));
+    ruler_resp.on_hover_text(tr("Rotella: zoom sul puntatore · Maiusc+rotella o trascina: scorri"));
     out
 }
 
@@ -377,12 +378,12 @@ pub fn filter_card(ui: &mut egui::Ui, f: &mut Filter, cw: f32, slider_w: f32) {
     egui::Frame::group(ui.style()).stroke(stroke).show(ui, |ui| {
         ui.set_width(cw);
         ui.set_max_width(cw);
-        ui.checkbox(&mut f.enabled, egui::RichText::new(f.name).strong()).on_hover_text(f.help);
+        ui.checkbox(&mut f.enabled, egui::RichText::new(crate::i18n::tr(f.name)).strong()).on_hover_text(crate::i18n::tr(f.help));
         if f.enabled {
             let id = f.id;
             for p in &mut f.params {
                 ui.horizontal(|ui| {
-                    ui.add_sized([LABEL_WIDTH, 18.0], egui::Label::new(p.label));
+                    ui.add_sized([LABEL_WIDTH, 18.0], egui::Label::new(crate::i18n::tr(p.label)));
                     match p.kind.clone() {
                         Kind::Float { min, max } => {
                             ui.spacing_mut().slider_width = slider_w;
@@ -403,7 +404,7 @@ pub fn filter_card(ui: &mut egui::Ui, f: &mut Filter, cw: f32, slider_w: f32) {
                         }
                     }
                     let changed = p.value != p.default;
-                    if ui.add_enabled(changed, egui::Button::new("Reset").small()).on_hover_text("Ripristina il valore predefinito").clicked() {
+                    if ui.add_enabled(changed, egui::Button::new(tr("Reset")).small()).on_hover_text(tr("Ripristina il valore predefinito")).clicked() {
                         p.value = p.default;
                     }
                 });

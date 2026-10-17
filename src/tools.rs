@@ -1,4 +1,5 @@
 //! Locates (and on first run unpacks) the embedded ffmpeg / Real-ESRGAN binaries.
+use crate::i18n::{tf, tr};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -49,9 +50,9 @@ pub fn prepare() -> Result<Tools, String> {
     let marker = dir.join(".complete");
     if !marker.exists() {
         let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+        std::fs::create_dir_all(&dir).map_err(|e| tf("cannot create {0}: {1}", &[&dir.display(), &e]))?;
         let dec = zstd::Decoder::new(BUNDLE).map_err(|e| e.to_string())?;
-        tar::Archive::new(dec).unpack(&dir).map_err(|e| format!("unpack failed: {e}"))?;
+        tar::Archive::new(dec).unpack(&dir).map_err(|e| tf("unpack failed: {0}", &[&e]))?;
         std::fs::write(&marker, b"ok").map_err(|e| e.to_string())?;
         // drop stale versions
         if let Ok(rd) = std::fs::read_dir(&base) {
@@ -77,7 +78,7 @@ pub fn prepare() -> Result<Tools, String> {
         }
     }
     if !ffmpeg.exists() {
-        return Err("ffmpeg missing from the embedded bundle".into());
+        return Err(tr("ffmpeg missing from the embedded bundle").into());
     }
     let (realesrgan, models) = if re.exists() {
         let mut m: Vec<String> = std::fs::read_dir(dir.join("realesrgan").join("models"))

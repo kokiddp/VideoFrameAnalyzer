@@ -132,7 +132,7 @@ pub fn viewer_overlay(st: &mut OcrState, ui: &egui::Ui, painter: &egui::Painter,
     if let Some(r) = st.roi {
         let rr = egui::Rect::from_min_max(to_screen(r[0], r[1]), to_screen(r[2], r[3]));
         painter.rect_stroke(rr, 0.0, egui::Stroke::new(1.5, Color32::YELLOW), egui::StrokeKind::Middle);
-        painter.text(rr.left_top() + Vec2::new(3.0, -2.0), Align2::LEFT_BOTTOM, "area OCR", FontId::proportional(11.0), Color32::YELLOW);
+        painter.text(rr.left_top() + Vec2::new(3.0, -2.0), Align2::LEFT_BOTTOM, tr("area OCR"), FontId::proportional(11.0), Color32::YELLOW);
     }
     let slack = st.step.max(1) * 2;
     let click = if resp.clicked() { ui.input(|i| i.pointer.interact_pos()) } else { None };
@@ -158,7 +158,7 @@ pub fn viewer_overlay(st: &mut OcrState, ui: &egui::Ui, painter: &egui::Painter,
     if let Some(i) = clicked_hit {
         st.selected = Some(i);
         ui.ctx().copy_text(st.hits[i].text.clone());
-        st.status = Some((format!("Copiato: {}", st.hits[i].text), false));
+        st.status = Some((tf("Copiato: {0}", &[&st.hits[i].text]), false));
     }
 }
 
@@ -189,7 +189,7 @@ impl App {
                 Scope::Cue => match self.cue {
                     Some((a, b)) => (a, b.saturating_sub(a) + 1),
                     None => {
-                        self.ocr.status = Some(("Nessun intervallo CUE selezionato (tasti I / O)".into(), true));
+                        self.ocr.status = Some((tr("Nessun intervallo CUE selezionato (tasti I / O)").into(), true));
                         return;
                     }
                 },
@@ -240,7 +240,7 @@ impl App {
                     OcrMsg::Done(Ok(hits)) => {
                         let secs = self.ocr.started.map_or(0.0, |s| s.elapsed().as_secs_f32());
                         let plates = hits.iter().filter(|h| h.kind == Kind::Plate).count();
-                        self.ocr.status = Some((format!("{} risultati ({} targhe) in {:.1}s", hits.len(), plates, secs), false));
+                        self.ocr.status = Some((tf("{0} risultati ({1} targhe) in {2}s", &[&hits.len(), &plates, &format!("{:.1}", secs)]), false));
                         self.ocr.hits = hits;
                         self.ocr.selected = None;
                         finished = true;
@@ -282,12 +282,12 @@ impl App {
 
     fn ocr_csv(&self) -> String {
         let q = |s: &str| format!("\"{}\"", s.replace('"', "\"\""));
-        let mut out = String::from("tipo,testo,confidenza,formato,frame_inizio,frame_fine,frame_migliore,tempo_s,letture,alternative\n");
+        let mut out = String::from(tr("tipo,testo,confidenza,formato,frame_inizio,frame_fine,frame_migliore,tempo_s,letture,alternative\n"));
         let fps = self.video.as_ref().map_or(25.0, |v| v.info.fps);
         for h in self.ocr.hits.iter().filter(|h| self.ocr.visible(h)) {
             out.push_str(&format!(
                 "{},{},{:.3},{},{},{},{},{:.3},{},{}\n",
-                if h.kind == Kind::Plate { "targa" } else { "testo" },
+                if h.kind == Kind::Plate { tr("targa") } else { tr("testo") },
                 q(&h.text),
                 h.conf,
                 q(h.format.unwrap_or("")),
@@ -303,60 +303,60 @@ impl App {
     }
 
     pub(super) fn ocr_section(&mut self, ui: &mut egui::Ui) {
-        if !super::section_title(ui, "OCR") {
+        if !super::section_title(ui, tr("OCR")) {
             return;
         }
         if !self.ocr_ready() {
-            ui.label("Modelli OCR non inclusi in questa build.");
+            ui.label(tr("Modelli OCR non inclusi in questa build."));
             return;
         }
         let busy = self.ocr.rx.is_some();
         let have_video = self.video.is_some();
         ui.add_enabled_ui(!busy, |ui| {
             ui.horizontal(|ui| {
-                ui.selectable_value(&mut self.ocr.mode, Mode::Text, "Testo");
-                ui.selectable_value(&mut self.ocr.mode, Mode::Plates, "Targhe");
-                ui.selectable_value(&mut self.ocr.mode, Mode::Both, "Entrambi");
+                ui.selectable_value(&mut self.ocr.mode, Mode::Text, tr("Testo"));
+                ui.selectable_value(&mut self.ocr.mode, Mode::Plates, tr("Targhe"));
+                ui.selectable_value(&mut self.ocr.mode, Mode::Both, tr("Entrambi"));
             });
             ui.horizontal(|ui| {
-                ui.selectable_value(&mut self.ocr.scope, Scope::Frame, "Fotogramma");
-                ui.selectable_value(&mut self.ocr.scope, Scope::Cue, "Intervallo CUE");
-                ui.selectable_value(&mut self.ocr.scope, Scope::Next, "Serie");
+                ui.selectable_value(&mut self.ocr.scope, Scope::Frame, tr("Fotogramma"));
+                ui.selectable_value(&mut self.ocr.scope, Scope::Cue, tr("Intervallo CUE"));
+                ui.selectable_value(&mut self.ocr.scope, Scope::Next, tr("Serie"));
             });
             if self.ocr.scope == Scope::Next {
                 ui.horizontal(|ui| {
-                    ui.label("Fotogrammi:");
+                    ui.label(tr("Fotogrammi:"));
                     ui.add(egui::DragValue::new(&mut self.ocr.next_n).range(2..=100_000));
                 });
             }
             if self.ocr.scope != Scope::Frame {
                 ui.horizontal(|ui| {
-                    ui.label("Analizza uno ogni:");
+                    ui.label(tr("Analizza uno ogni:"));
                     ui.add(egui::DragValue::new(&mut self.ocr.step).range(1..=1000))
-                        .on_hover_text("Più fotogrammi = voto più affidabile, ma più lento (circa 1 s per fotogramma Full HD su CPU).");
+                        .on_hover_text(tr("Più fotogrammi = voto più affidabile, ma più lento (circa 1 s per fotogramma Full HD su CPU)."));
                 });
             }
             ui.horizontal(|ui| {
                 let ai_ok = self.ai.enabled && !self.devices_for(self.ai.engine).is_empty();
-                ui.add_enabled(ai_ok, egui::Checkbox::new(&mut self.ocr.use_ai, "Usa fotogramma potenziato (AI)"))
-                    .on_hover_text("Passa ogni fotogramma dalla rete neurale prima della lettura: aiuta su scritte piccole e sfocate, ma è molto più lento. Richiede l'AI attiva nei filtri.");
+                ui.add_enabled(ai_ok, egui::Checkbox::new(&mut self.ocr.use_ai, tr("Usa fotogramma potenziato (AI)")))
+                    .on_hover_text(tr("Passa ogni fotogramma dalla rete neurale prima della lettura: aiuta su scritte piccole e sfocate, ma è molto più lento. Richiede l'AI attiva nei filtri."));
             });
             if cfg!(windows) {
-                ui.checkbox(&mut self.ocr.use_gpu, "Usa la GPU (DirectML)")
-                    .on_hover_text("Esegue i modelli sulla scheda video (NVIDIA, AMD o Intel con DirectX 12): molto più veloce. Se non parte si usa la CPU.");
+                ui.checkbox(&mut self.ocr.use_gpu, tr("Usa la GPU (DirectML)"))
+                    .on_hover_text(tr("Esegue i modelli sulla scheda video (NVIDIA, AMD o Intel con DirectX 12): molto più veloce. Se non parte si usa la CPU."));
             }
-            ui.checkbox(&mut self.ocr.auto, "OCR automatico a fotogramma fermo");
+            ui.checkbox(&mut self.ocr.auto, tr("OCR automatico a fotogramma fermo"));
             ui.horizontal(|ui| {
                 match self.ocr.roi {
                     Some(_) => {
-                        ui.label("Area: selezionata");
-                        if ui.small_button("Tutto il fotogramma").clicked() {
+                        ui.label(tr("Area: selezionata"));
+                        if ui.small_button(tr("Tutto il fotogramma")).clicked() {
                             self.ocr.roi = None;
                         }
                     }
                     None => {
-                        ui.label("Area: tutto il fotogramma");
-                        ui.weak("(Maiusc+trascina sull'immagine per limitarla)");
+                        ui.label(tr("Area: tutto il fotogramma"));
+                        ui.weak(tr("(Maiusc+trascina sull'immagine per limitarla)"));
                     }
                 };
             });
@@ -365,12 +365,12 @@ impl App {
             if busy {
                 let (d, t) = self.ocr.progress;
                 ui.add(egui::ProgressBar::new(if t > 0 { d as f32 / t as f32 } else { 0.0 }).desired_width(ui.available_width() - 80.0).text(format!("{d}/{t}")));
-                if ui.button("Annulla").clicked() {
+                if ui.button(tr("Annulla")).clicked() {
                     self.ocr.cancel.store(true, Ordering::Relaxed);
                 }
             } else {
                 ui.add_enabled_ui(have_video, |ui| {
-                    if ui.add_sized([ui.available_width(), 30.0], egui::Button::new(RichText::new("Leggi (T)").strong())).clicked() {
+                    if ui.add_sized([ui.available_width(), 30.0], egui::Button::new(RichText::new(tr("Leggi (T)")).strong())).clicked() {
                         self.ocr_start(false);
                     }
                 });
@@ -384,10 +384,10 @@ impl App {
         }
         ui.separator();
         ui.horizontal(|ui| {
-            ui.label("Confidenza minima");
+            ui.label(tr("Confidenza minima"));
             ui.add(egui::Slider::new(&mut self.ocr.min_conf, 0.0..=1.0).custom_formatter(|v, _| format!("{:.0}%", v * 100.0)));
         });
-        ui.checkbox(&mut self.ocr.only_valid, "Solo targhe con formato valido");
+        ui.checkbox(&mut self.ocr.only_valid, tr("Solo targhe con formato valido"));
         let fps = self.video.as_ref().map_or(25.0, |v| v.info.fps);
         let mut goto = None;
         let mut copy = None;
@@ -396,17 +396,17 @@ impl App {
             for &i in &rows {
                 let h = &self.ocr.hits[i];
                 ui.horizontal(|ui| {
-                    let tag = if h.kind == Kind::Plate { "TARGA" } else { "testo" };
+                    let tag = if h.kind == Kind::Plate { tr("TARGA") } else { tr("testo") };
                     ui.label(RichText::new(tag).small().color(hit_color(h)));
                     let r = ui.selectable_label(self.ocr.selected == Some(i), RichText::new(&h.text).monospace()).on_hover_ui(|ui| {
                         if let Some(f) = h.format {
-                            ui.label(format!("Formato: {f}"));
+                            ui.label(tf("Formato: {0}", &[&tr(f)]));
                         }
-                        ui.label(format!("{} letture, fotogrammi {}–{} (migliore: {})", h.readings, h.first, h.last, h.best));
+                        ui.label(tf("{0} letture, fotogrammi {1}–{2} (migliore: {3})", &[&h.readings, &h.first, &h.last, &h.best]));
                         if !h.alts.is_empty() {
-                            ui.label(format!("Altre letture: {}", h.alts.join(", ")));
+                            ui.label(tf("Altre letture: {0}", &[&h.alts.join(", ")]));
                         }
-                        ui.small("Clic: vai al fotogramma · clic destro: copia");
+                        ui.small(tr("Clic: vai al fotogramma · clic destro: copia"));
                     });
                     if r.clicked() {
                         goto = Some(i);
@@ -428,12 +428,12 @@ impl App {
             ui.ctx().copy_text(t);
         }
         ui.horizontal(|ui| {
-            if ui.button("Copia tutto").clicked() {
+            if ui.button(tr("Copia tutto")).clicked() {
                 let all: Vec<&str> = rows.iter().map(|&i| self.ocr.hits[i].text.as_str()).collect();
                 ui.ctx().copy_text(all.join("\n"));
-                self.ocr.status = Some((format!("Copiati {} risultati", all.len()), false));
+                self.ocr.status = Some((tf("Copiati {0} risultati", &[&all.len()]), false));
             }
-            if ui.button("Salva CSV").clicked() {
+            if ui.button(tr("Salva CSV")).clicked() {
                 match (self.effective_out_dir(), self.video.as_ref()) {
                     (Some(dir), Some(v)) => {
                         let stem = v.path.file_stem().and_then(|s| s.to_str()).unwrap_or("video");
@@ -441,12 +441,12 @@ impl App {
                         self.ocr.status = Some(match std::fs::write(&p, self.ocr_csv()) {
                             Ok(()) => {
                                 self.last_export = Some(p.clone());
-                                (format!("Salvato {}", p.display()), false)
+                                (tf("Salvato {0}", &[&p.display()]), false)
                             }
-                            Err(e) => (format!("CSV non salvato: {e}"), true),
+                            Err(e) => (tf("CSV non salvato: {0}", &[&e]), true),
                         });
                     }
-                    _ => self.ocr.status = Some(("Scegli prima la cartella di esportazione".into(), true)),
+                    _ => self.ocr.status = Some((tr("Scegli prima la cartella di esportazione").into(), true)),
                 }
             }
         });

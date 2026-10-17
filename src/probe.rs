@@ -1,4 +1,5 @@
 //! Video metadata, obtained by parsing `ffmpeg -i` output (so ffprobe is not needed).
+use crate::i18n::{tf, tr};
 use crate::tools::{command, Tools};
 use std::path::Path;
 
@@ -52,7 +53,7 @@ pub fn probe(tools: &Tools, path: &Path) -> Result<VideoInfo, String> {
         .args(["-hide_banner", "-i"])
         .arg(path)
         .output()
-        .map_err(|e| format!("cannot run ffmpeg: {e}"))?;
+        .map_err(|e| tf("cannot run ffmpeg: {0}", &[&e]))?;
     let text = String::from_utf8_lossy(&out.stderr).to_string();
 
     let duration = text.lines().find_map(|l| {
@@ -69,7 +70,7 @@ pub fn probe(tools: &Tools, path: &Path) -> Result<VideoInfo, String> {
         .find(|l| l.contains("Video:") && l.contains("Stream #") && !l.contains("attached pic"))
         .ok_or_else(|| {
             let last = text.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("");
-            format!("no video stream found ({})", last.trim())
+            tf("no video stream found ({0})", &[&last.trim()])
         })?;
     let desc = &line[line.find("Video:").unwrap() + 6..];
     let parts = split_top(desc);
@@ -78,7 +79,7 @@ pub fn probe(tools: &Tools, path: &Path) -> Result<VideoInfo, String> {
         .get(1)
         .map(|s| s.split('(').next().unwrap_or("").trim().to_string())
         .unwrap_or_default();
-    let (width, height) = parts.iter().skip(1).find_map(|p| parse_size(p)).ok_or("cannot determine video size")?;
+    let (width, height) = parts.iter().skip(1).find_map(|p| parse_size(p)).ok_or(tr("cannot determine video size"))?;
     let fps_tok = |suffix: &str| {
         parts.iter().find_map(|p| p.strip_suffix(suffix).and_then(|n| n.trim().replace('k', "000").parse::<f64>().ok()))
     };

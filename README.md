@@ -99,6 +99,11 @@ While the video **plays**, the filters are automatically suspended (the *Apply* 
 controls are disabled) so playback stays smooth; they come back on pause and are always active in frame-by-frame mode.
 A pill with a spinner at the top-right of the picture tells you when a frame is still being processed.
 
+**Updates**: at start-up the program looks for a newer GitHub release and offers to install it (*Update now* /
+*Later* / *Skip this version*); the same check is available from **Options → Check for updates**, where the
+start-up check can also be switched off. The download is verified against the release's `.sha256` file, then the
+executable is replaced and the program restarts. It uses the system `curl` and needs the folder to be writable.
+
 ---
 
 ## Keyboard shortcuts

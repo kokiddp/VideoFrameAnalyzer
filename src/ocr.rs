@@ -1,5 +1,6 @@
 //! OCR engine: scene-text detection + recognition (PaddleOCR PP-OCRv5 "latin": en, it, fr, de, nl, pt, es, ...)
 //! and licence-plate detection + recognition, as ONNX models on ONNX Runtime (DirectML GPU on Windows, CPU elsewhere).
+use crate::i18n::{tf};
 use ort::{environment::Environment, session::Session, value::Tensor};
 use std::path::Path;
 use std::sync::OnceLock;
@@ -244,7 +245,7 @@ impl Engine {
     /// `gpu`: run on the GPU (DirectML, Windows) when it works, otherwise on the CPU with `threads` threads.
     pub fn new(dir: &Path, gpu: bool, threads: usize) -> Result<Engine, String> {
         if !available(dir) {
-            return Err(format!("modelli OCR mancanti in {}", dir.display()));
+            return Err(tf("modelli OCR mancanti in {0}", &[&dir.display()]));
         }
         let txt = std::fs::read_to_string(dir.join("text_dict.txt")).map_err(|e| e.to_string())?;
         let mut dict: Vec<String> = txt.split('\n').map(|l| l.trim_end_matches('\r').to_string()).collect();
@@ -313,7 +314,7 @@ impl Engine {
         }
         let (_, prob) = Self::model(&mut self.det, &self.dir, "text_det.onnx", self.gpu, self.threads)?.run_f32(&[1, 3, dh, dw], &data)?;
         if prob.len() != dw * dh {
-            return Err(format!("uscita del detector inattesa ({} valori per {}x{})", prob.len(), dw, dh));
+            return Err(tf("uscita del detector inattesa ({0} valori per {1}x{2})", &[&prob.len(), &dw, &dh]));
         }
         let (sx, sy) = (img.w as f32 / dw as f32, img.h as f32 / dh as f32);
         let mut seen = vec![false; dw * dh];
@@ -455,7 +456,7 @@ impl Engine {
             let g8: Vec<u8> = g.iter().map(|x| (x + 0.5).clamp(0.0, 255.0) as u8).collect();
             let p = Self::model(&mut self.prec, &self.dir, "plate_rec.onnx", self.gpu, self.threads)?.run_u8(&[1, PLATE_H, PLATE_W, 1], &g8)?;
             if p.len() != PLATE_SLOTS * vocab {
-                return Err(format!("uscita OCR targhe inattesa ({} valori)", p.len()));
+                return Err(tf("uscita OCR targhe inattesa ({0} valori)", &[&p.len()]));
             }
             // a variant that is sure of itself counts more than one that hesitates
             let m: f32 = p.chunks_exact(vocab).map(|s| s.iter().cloned().fold(0.0, f32::max)).sum::<f32>() / PLATE_SLOTS as f32;
