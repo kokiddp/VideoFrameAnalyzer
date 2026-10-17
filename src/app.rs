@@ -7,7 +7,7 @@ use crate::nn::{self, Benchmark, Device};
 use crate::player::Playback;
 use crate::tools::{self, Tools};
 use crate::video::{PlayRange, Video};
-use crate::widgets::{filter_card, icon_button, knob, range_bars, slider_width, Icon, LABEL_WIDTH};
+use crate::widgets::{filter_card, icon_button, knob, range_bars, slider_width, BarView, Icon, LABEL_WIDTH};
 use eframe::egui::{self, Align2, Color32, FontId, Key, Modifiers, RichText, Sense, Vec2};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -128,11 +128,15 @@ pub struct App {
     force_apply: bool,
     busy_since: Option<Instant>,
     ocr: OcrState,
+    bar_view: BarView,
+    /// size of the image last drawn in the viewer: a change (upscaling, scaling filter) resets the view to "fit"
+    shown_size: Vec2,
 }
 
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>, initial: Option<PathBuf>) -> App {
         let ctx = cc.egui_ctx.clone();
+        apply_theme(&ctx);
         let wake: Waker = {
             let ctx = ctx.clone();
             Arc::new(move || ctx.request_repaint())
@@ -185,7 +189,7 @@ impl App {
             dialog_rx,
             status: None,
             goto_text: String::new(),
-            show_log: true,
+            show_log: false,
             bench: BenchUi::new(),
             devices: Vec::new(),
             bench_rx: None,
@@ -199,6 +203,8 @@ impl App {
             force_apply: false,
             busy_since: None,
             ocr: OcrState::new(),
+            bar_view: BarView::default(),
+            shown_size: Vec2::ZERO,
         };
         if let Some(p) = initial {
             app.dialog_tx.send(Dialog::Video(p)).ok();
@@ -226,6 +232,7 @@ impl App {
                 self.pan = Vec2::ZERO;
                 self.out_dir = None;
                 self.ocr.clear();
+                self.bar_view.reset();
                 let vf = self.vf();
                 self.video = Some(Video::new(path, info, vf));
             }
@@ -590,27 +597,34 @@ impl App {
 
     fn top_bar(&mut self, ui: &mut egui::Ui) {
         egui::Panel::top("top").show(ui, |ui| {
+            ui.add_space(2.0);
             ui.horizontal(|ui| {
-                if ui.button("Apri filmato…").on_hover_text("Ctrl+O, oppure trascina il file nella finestra").clicked() {
+                if ui.add(egui::Button::new(RichText::new("Apri filmato…").strong()).fill(ACCENT.gamma_multiply(0.55))).on_hover_text("Ctrl+O, oppure trascina il file nella finestra").clicked() {
                     self.pick_video();
                 }
                 if let Some(v) = &self.video {
                     let i = &v.info;
-                    ui.label(RichText::new(v.path.file_name().unwrap_or_default().to_string_lossy()).strong());
-                    ui.label(format!(
-                        "{}×{}  {:.3} fps  {}  {}{}",
-                        i.width,
-                        i.height,
-                        i.fps,
-                        i.codec,
-                        i.pix_fmt,
-                        i.duration.map(|d| format!("  {}", fmt_time(d))).unwrap_or_default()
-                    ));
+                    ui.add_space(6.0);
+                    ui.label(RichText::new(v.path.file_name().unwrap_or_default().to_string_lossy()).strong().size(15.0));
+                    for chip in [
+                        format!("{}×{}", i.width, i.height),
+                        format!("{:.3} fps", i.fps),
+                        i.codec.to_string(),
+                        i.pix_fmt.to_string(),
+                    ]
+                    .into_iter()
+                    .chain(i.duration.map(fmt_time))
+                    {
+                        chip_label(ui, &chip);
+                    }
                 }
-                if let Some((s, err)) = &self.status {
-                    ui.colored_label(if *err { Color32::LIGHT_RED } else { Color32::LIGHT_GREEN }, s);
-                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if let Some((s, err)) = &self.status {
+                        ui.colored_label(if *err { Color32::LIGHT_RED } else { Color32::LIGHT_GREEN }, s);
+                    }
+                });
             });
+            ui.add_space(2.0);
         });
     }
 
@@ -626,7 +640,8 @@ impl App {
             // CUE range bar + seek bar
             let pos = self.video.as_ref().unwrap().want;
             let max = last.unwrap_or(pos.max(1)).max(1);
-            let bars = range_bars(ui, pos, max, self.cue);
+            let fps_bars = fps as f64;
+            let bars = range_bars(ui, pos, max, self.cue, fps_bars, &mut self.bar_view);
             if let Some(c) = bars.cue {
                 self.cue = c;
             }
@@ -678,8 +693,8 @@ impl App {
                     }
                 }
                 ui.separator();
-                ui.label(format!("Fotogramma {cur}{}", last.map(|l| format!(" / {l}")).unwrap_or_default()));
-                ui.label(fmt_time(cur as f64 / fps));
+                ui.label(RichText::new(fmt_time(cur as f64 / fps)).monospace().size(16.0).strong());
+                ui.label(RichText::new(format!("fotogramma {cur}{}", last.map(|l| format!(" / {l}")).unwrap_or_default())).monospace().weak());
                 ui.add(egui::TextEdit::singleline(&mut self.goto_text).desired_width(60.0).hint_text("vai a #"));
                 if ui.input(|i| i.key_pressed(Key::Enter)) && ui.memory(|m| m.focused().is_some()) {
                     if let Ok(n) = self.goto_text.trim().parse::<u64>() {
@@ -691,6 +706,18 @@ impl App {
                 if loading {
                     ui.spinner();
                 }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.add_enabled(!self.bar_view.is_full(), egui::Button::new("Zoom 0")).on_hover_text("Mostra tutta la durata nelle barre").clicked() {
+                        self.bar_view.reset();
+                    }
+                    if ui.button("-").on_hover_text("Riduci zoom barre").clicked() {
+                        self.bar_view.zoom_at(max, 1.0 / 1.6, 0.5);
+                    }
+                    if ui.button("+").on_hover_text("Ingrandisci barre (o rotella sulle barre)").clicked() {
+                        self.bar_view.zoom_at(max, 1.6, 0.5);
+                    }
+                    ui.label(RichText::new(format!("×{:.1}", self.bar_view.level(max))).monospace().weak());
+                });
             });
             ui.horizontal(|ui| {
                 ui.label("Velocità");
@@ -734,13 +761,13 @@ impl App {
                 let locked = self.filters_busy || self.pb.playing;
                 let n_active = self.filters.iter().filter(|f| f.enabled).count() + self.ai.enabled as usize;
                 let applying = self.video.as_ref().map_or(false, |v| v.shown_gen != v.gen || (v.loading && !self.pb.playing));
-                ui.horizontal(|ui| {
-                    ui.heading("Filtri");
+                let open_filters = section_header(ui, "Filtri", |ui| {
                     ui.label(format!("{n_active} attivi"));
                     if applying {
                         ui.spinner();
                     }
                 });
+                if open_filters {
                 ui.add_enabled_ui(!locked, |ui| {
                 ui.horizontal(|ui| {
                     ui.checkbox(&mut self.filters_on, "Applica")
@@ -915,9 +942,10 @@ impl App {
                 if ui.button("Benchmark…").on_hover_text("Confronta modelli, risoluzioni e processori (CPU/GPU)").clicked() {
                     self.open_bench();
                 }
+                }
 
-                ui.separator();
-                ui.heading("Esporta fotogrammi");
+                ui.add_space(8.0);
+                if section_title(ui, "Esporta fotogrammi") {
                 egui::ComboBox::from_id_salt("fmt").selected_text(self.format.label()).show_ui(ui, |ui| {
                     for f in Format::ALL {
                         ui.selectable_value(&mut self.format, f, f.label());
@@ -944,13 +972,13 @@ impl App {
                         ui.small(d.display().to_string());
                     });
                 }
-                if ui.button("Cartella…").clicked() {
+                if ui.button("Cartella di destinazione…").clicked() {
                     self.pick_dir();
                 }
                 let busy = self.export_rx.is_some();
                 ui.add_enabled_ui(self.video.is_some() && !busy, |ui| {
                     if ui
-                        .add_sized([ui.available_width(), 34.0], egui::Button::new(RichText::new("Esporta fotogramma corrente").strong()))
+                        .add_sized([ui.available_width(), 34.0], egui::Button::new(RichText::new("Esporta fotogramma corrente").strong()).fill(ACCENT.gamma_multiply(0.55)))
                         .on_hover_text("E oppure Ctrl+S")
                         .clicked()
                     {
@@ -968,8 +996,8 @@ impl App {
                         reveal(p);
                     }
                 }
+                }
                 ui.add_space(10.0);
-                ui.separator();
                 self.ocr_section(ui);
                 ui.add_space(8.0);
                 ui.collapsing("Scorciatoie", |ui| {
@@ -1308,8 +1336,19 @@ impl App {
             let ai_key = self.ai_key();
             let playing = self.pb.playing;
             let nearest = self.nearest;
+            let mut zoom_pending: Option<(f32, f32)> = None;
             let Some(v) = &self.video else {
-                painter.text(rect.center(), Align2::CENTER_CENTER, "Trascina qui un filmato\noppure premi «Apri filmato…»", FontId::proportional(22.0), Color32::GRAY);
+                let zone = egui::Rect::from_center_size(rect.center(), Vec2::new(440.0, 230.0).min(rect.size() - Vec2::splat(24.0)));
+                painter.rect_stroke(zone, 18.0, egui::Stroke::new(2.0, Color32::from_gray(70)), egui::StrokeKind::Inside);
+                let ic = egui::Rect::from_center_size(zone.center() - Vec2::new(0.0, 38.0), Vec2::new(64.0, 44.0));
+                painter.rect_stroke(ic, 6.0, egui::Stroke::new(3.0, Color32::from_gray(90)), egui::StrokeKind::Inside);
+                painter.add(egui::Shape::convex_polygon(
+                    vec![ic.center() + Vec2::new(-7.0, -11.0), ic.center() + Vec2::new(-7.0, 11.0), ic.center() + Vec2::new(11.0, 0.0)],
+                    Color32::from_gray(90),
+                    egui::Stroke::NONE,
+                ));
+                painter.text(zone.center() + Vec2::new(0.0, 14.0), Align2::CENTER_CENTER, "Trascina qui un filmato", FontId::proportional(22.0), Color32::from_gray(190));
+                painter.text(zone.center() + Vec2::new(0.0, 46.0), Align2::CENTER_CENTER, "oppure premi Ctrl+O", FontId::proportional(14.0), Color32::from_gray(120));
                 return;
             };
 
@@ -1317,6 +1356,11 @@ impl App {
             let tex = if use_ai { v.ai.as_ref().map(|a| &a.tex) } else { v.tex.as_ref() };
             if let Some(tex) = tex {
                 let size = tex.size_vec2();
+                if size != self.shown_size {
+                    self.shown_size = size;
+                    self.fit = true;
+                    self.pan = Vec2::ZERO;
+                }
                 let fit_scale = (rect.width() / size.x).min(rect.height() / size.y);
                 let mut scale = if self.fit { fit_scale } else { self.zoom };
                 if resp.hovered() {
@@ -1352,7 +1396,11 @@ impl App {
                     badge.push_str("  · AI");
                 }
                 let _ = nearest;
-                painter.text(rect.left_top() + Vec2::new(8.0, 6.0), Align2::LEFT_TOP, badge, FontId::monospace(13.0), Color32::from_rgba_unmultiplied(255, 255, 255, 200));
+                let g = painter.layout_no_wrap(badge, FontId::monospace(12.5), Color32::from_gray(225));
+                let bg = egui::Rect::from_min_size(rect.left_top() + Vec2::new(8.0, 8.0), g.size() + Vec2::new(14.0, 8.0));
+                painter.rect_filled(bg, 6.0, Color32::from_rgba_unmultiplied(10, 10, 12, 190));
+                painter.galley(bg.min + Vec2::new(7.0, 4.0), g, Color32::WHITE);
+                zoom_pending = Some((scale, fit_scale));
             } else if v.loading {
                 painter.text(rect.center(), Align2::CENTER_CENTER, "Caricamento…", FontId::proportional(18.0), Color32::GRAY);
             }
@@ -1374,7 +1422,7 @@ impl App {
                 painter.galley(egui::pos2(pill.left() + 36.0, pill.center().y - galley.size().y / 2.0), galley, Color32::WHITE);
                 egui::Spinner::new().size(18.0).color(Color32::WHITE).paint_at(ui, egui::Rect::from_center_size(egui::pos2(pill.left() + 18.0, pill.center().y), Vec2::splat(18.0)));
             }
-            let mut y = 24.0;
+            let mut y = 42.0;
             let mut note = |text: String, col: Color32| {
                 painter.text(rect.left_top() + Vec2::new(8.0, y), Align2::LEFT_TOP, text, FontId::proportional(14.0), col);
                 y += 18.0;
@@ -1388,6 +1436,37 @@ impl App {
             if let Some(e) = &v.error {
                 for l in e.lines().take(6) {
                     note(l.to_string(), Color32::LIGHT_RED);
+                }
+            }
+            if let Some((scale, fit_scale)) = zoom_pending {
+                let bar = egui::Rect::from_min_size(egui::pos2(rect.right() - 236.0, rect.bottom() - 40.0), Vec2::new(228.0, 30.0));
+                let mut act = None;
+                ui.scope_builder(egui::UiBuilder::new().max_rect(bar), |ui| {
+                    ui.horizontal(|ui| {
+                        if ui.button("Adatta").on_hover_text("Doppio clic sull'immagine").clicked() {
+                            act = Some(fit_scale);
+                        }
+                        if ui.button("100%").clicked() {
+                            act = Some(1.0);
+                        }
+                        if ui.button("+").clicked() {
+                            act = Some((scale * 1.25).min(64.0));
+                        }
+                        if ui.button("-").clicked() {
+                            act = Some((scale / 1.25).max(0.02));
+                        }
+                    });
+                });
+                if let Some(z) = act {
+                    if (z - fit_scale).abs() < f32::EPSILON {
+                        self.fit = true;
+                        self.pan = Vec2::ZERO;
+                    } else {
+                        let k = z / scale;
+                        self.pan *= k;
+                        self.fit = false;
+                        self.zoom = z;
+                    }
                 }
             }
         });
@@ -1506,4 +1585,77 @@ fn reveal(p: &std::path::Path) {
     {
         let _ = std::process::Command::new("open").arg("-R").arg(p).spawn();
     }
+}
+
+const ACCENT: Color32 = Color32::from_rgb(64, 132, 214);
+
+fn apply_theme(ctx: &egui::Context) {
+    ctx.set_theme(egui::Theme::Dark);
+    ctx.global_style_mut(|st| {
+        let v = &mut st.visuals;
+        v.panel_fill = Color32::from_rgb(27, 29, 33);
+        v.window_fill = Color32::from_rgb(33, 35, 40);
+        v.extreme_bg_color = Color32::from_rgb(18, 19, 22);
+        v.faint_bg_color = Color32::from_rgb(34, 36, 41);
+        v.selection.bg_fill = ACCENT;
+        v.hyperlink_color = Color32::from_rgb(120, 175, 245);
+        let r = egui::CornerRadius::same(6);
+        v.widgets.noninteractive.corner_radius = r;
+        v.widgets.inactive.corner_radius = r;
+        v.widgets.hovered.corner_radius = r;
+        v.widgets.active.corner_radius = r;
+        v.widgets.open.corner_radius = r;
+        v.window_corner_radius = egui::CornerRadius::same(10);
+        v.widgets.inactive.bg_fill = Color32::from_rgb(48, 51, 58);
+        v.widgets.inactive.weak_bg_fill = Color32::from_rgb(48, 51, 58);
+        v.widgets.hovered.weak_bg_fill = Color32::from_rgb(62, 67, 77);
+        v.widgets.hovered.bg_fill = Color32::from_rgb(62, 67, 77);
+        v.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0, Color32::from_rgb(50, 53, 60));
+        st.spacing.item_spacing = Vec2::new(8.0, 6.0);
+        st.spacing.button_padding = Vec2::new(10.0, 4.0);
+        st.spacing.interact_size.y = 24.0;
+    });
+}
+
+/// Small rounded tag used for the video properties in the top bar.
+fn chip_label(ui: &mut egui::Ui, text: &str) {
+    egui::Frame::NONE
+        .fill(Color32::from_rgb(40, 43, 49))
+        .corner_radius(egui::CornerRadius::same(10))
+        .inner_margin(egui::Margin::symmetric(8, 2))
+        .show(ui, |ui| {
+            ui.label(RichText::new(text).size(12.0).color(Color32::from_gray(185)));
+        });
+}
+
+/// Section heading with an accent bar.
+fn section_title(ui: &mut egui::Ui, text: &str) -> bool {
+    section_header(ui, text, |_| {})
+}
+
+/// Collapsible section heading (click to fold); `extra` is drawn to the right of the title.
+/// Returns whether the section is open.
+fn section_header(ui: &mut egui::Ui, text: &str, extra: impl FnOnce(&mut egui::Ui)) -> bool {
+    let id = egui::Id::new(("section", text));
+    let mut open = ui.data(|d| d.get_temp::<bool>(id)).unwrap_or(true);
+    ui.horizontal(|ui| {
+        let (r, _) = ui.allocate_exact_size(Vec2::new(4.0, 18.0), Sense::hover());
+        ui.painter().rect_filled(r, 2.0, ACCENT);
+        let (ar, _) = ui.allocate_exact_size(Vec2::splat(12.0), Sense::hover());
+        let c = ar.center();
+        let pts = if open {
+            vec![c + Vec2::new(-5.0, -3.0), c + Vec2::new(5.0, -3.0), c + Vec2::new(0.0, 4.0)]
+        } else {
+            vec![c + Vec2::new(-3.0, -5.0), c + Vec2::new(-3.0, 5.0), c + Vec2::new(4.0, 0.0)]
+        };
+        ui.painter().add(egui::Shape::convex_polygon(pts, ui.visuals().weak_text_color(), egui::Stroke::NONE));
+        let resp = ui.add(egui::Label::new(RichText::new(text).heading().strong()).sense(Sense::click()));
+        if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+            open = !open;
+            ui.data_mut(|d| d.insert_temp(id, open));
+        }
+        extra(ui);
+    });
+    ui.add_space(2.0);
+    open
 }

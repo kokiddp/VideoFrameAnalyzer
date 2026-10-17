@@ -3,3 +3,4 @@ assets/
 *.png
 
 testdata/
+!icon/*.png

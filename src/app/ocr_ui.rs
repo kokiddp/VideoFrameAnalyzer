@@ -303,7 +303,9 @@ impl App {
     }
 
     pub(super) fn ocr_section(&mut self, ui: &mut egui::Ui) {
-        ui.heading("OCR");
+        if !super::section_title(ui, "OCR") {
+            return;
+        }
         if !self.ocr_ready() {
             ui.label("Modelli OCR non inclusi in questa build.");
             return;
